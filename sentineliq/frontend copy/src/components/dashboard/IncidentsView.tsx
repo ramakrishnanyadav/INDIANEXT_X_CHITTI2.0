@@ -314,15 +314,16 @@ const IncidentsView: React.FC = () => {
           </AnimatePresence>
         )}
       </div>
+    </div>
 
-      {/* Detail modal — rendered as sibling to avoid scroll clipping */}
-      {selectedId && (
-        <IncidentDetailModal
-          incidentId={selectedId}
-          onClose={() => setSelectedId(null)}
-        />
-      )}
-    </>
+    {/* Detail modal — rendered as sibling to avoid scroll clipping */}
+    {selectedId && (
+      <IncidentDetailModal
+        incidentId={selectedId}
+        onClose={() => setSelectedId(null)}
+      />
+    )}
+  </>
   );
 };
 
