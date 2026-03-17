@@ -218,7 +218,7 @@ const ThreatAnalysis: React.FC = () => {
                         <Cell key={i} fill={entry.color} />
                       ))}
                     </Pie>
-                    <Tooltip {...DarkTooltip} formatter={(v: number) => `${v}%`} />
+                    <Tooltip {...DarkTooltip} formatter={(v) => v != null ? `${v}%` : ''} />
                   </PieChart>
                 )}
               </ResponsiveContainer>

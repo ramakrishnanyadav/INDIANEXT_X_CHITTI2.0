@@ -36,7 +36,7 @@ const Dashboard: React.FC = () => {
   const handleUpload = async (file: File) => {
     setIsAnalyzing(true);
     try {
-      const newThreat = await securityService.analyzeFile(file);
+      const newThreat = await securityService.analyzeFile(file) as unknown as Threat;
       setThreats(prev => [newThreat, ...prev]);
     } catch (error) {
       console.error("Analysis failed:", error);
