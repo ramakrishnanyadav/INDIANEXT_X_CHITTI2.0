@@ -1,15 +1,7 @@
 {
-  "version": 2,
-  "name": "sentineliq-frontend",
-  "builds": [
-    {
-      "src": "package.json",
-      "use": "@vercel/static-build",
-      "config": {
-        "distDir": "dist"
-      }
-    }
-  ],
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "framework": "vite",
   "routes": [
     {
       "src": "/assets/(.*)",
@@ -19,8 +11,5 @@
       "src": "/(.*)",
       "dest": "/index.html"
     }
-  ],
-  "env": {
-    "VITE_API_BASE": "https://sentineliq-backend.onrender.com"
-  }
+  ]
 }
