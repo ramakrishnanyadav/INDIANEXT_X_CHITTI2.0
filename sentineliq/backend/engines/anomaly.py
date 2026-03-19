@@ -21,8 +21,11 @@ logger = logging.getLogger("sentineliq.anomaly")
 
 from config import AnomalyConfig  # type: ignore[import]
 
-JOBLIB_PATH_TEMPLATE  = os.path.join(os.path.dirname(__file__), "..", "db", "anomaly_model_{role}.joblib")
-BASELINE_PATH_TEMPLATE = os.path.join(os.path.dirname(__file__), "..", "db", "baseline_data_{role}.json")
+_is_serverless = os.getenv("VERCEL") == "1" or os.getenv("RENDER") == "true"
+_db_dir = "/tmp" if _is_serverless else os.path.join(os.path.dirname(__file__), "..", "db")
+
+JOBLIB_PATH_TEMPLATE  = os.path.join(_db_dir, "anomaly_model_{role}.joblib")
+BASELINE_PATH_TEMPLATE = os.path.join(_db_dir, "baseline_data_{role}.json")
 
 _ROLES = ["developer", "executive", "standard"]
 
@@ -64,12 +67,15 @@ def _validate_and_build_vector(
         raw = session_data.get(feat, DEFAULTS[feat])
         # NaN / None guard
         if raw is None:
-            raw = (baseline_means or {}).get(feat, DEFAULTS[feat])
+            raw = baseline_means.get(feat, DEFAULTS[feat]) if isinstance(baseline_means, dict) else DEFAULTS[feat]
         try:
-            val = float(raw)
+            if raw is None:
+                val = float(DEFAULTS[feat])
+            else:
+                val = float(str(raw))
             if not math.isfinite(val):
-                val = (baseline_means or {}).get(feat, DEFAULTS[feat])
-                val = float(val)
+                b_val = baseline_means.get(feat, DEFAULTS[feat]) if baseline_means else DEFAULTS[feat]
+                val = float(str(b_val))
         except (TypeError, ValueError):
             val = DEFAULTS[feat]
         vec.append(val)
@@ -105,7 +111,7 @@ def _generate_baseline(role: str) -> List[Dict[str, float]]:
             loc_d    = float(round(rng.random() * 15, 2))
 
         # Compute geographic velocity from location delta + session duration
-        geo_vel = float(round(loc_d / max(1, duration / 3600), 2))  # km/h
+        geo_vel = float(int((loc_d / max(1.0, duration / 3600.0)) * 100)) / 100.0  # km/h
 
         rec: Dict[str, float] = {
             "hour":                    hour,
@@ -148,7 +154,10 @@ def _load_or_generate_baseline(role: str) -> List[Dict[str, float]]:
 def _baseline_to_matrix(records: List[Dict[str, float]]) -> np.ndarray:
     rows = []
     for rec in records:
-        row = [float(rec.get(feat, DEFAULTS[feat])) for feat in FEATURE_NAMES]
+        row: List[float] = []
+        for feat in FEATURE_NAMES:
+            v = rec.get(feat)
+            row.append(float(v if v is not None else DEFAULTS[feat]))
         rows.append(row)
     return np.array(rows, dtype=float)
 
@@ -157,8 +166,8 @@ def _compute_baseline_means(records: List[Dict[str, float]]) -> Dict[str, float]
     """Compute per-feature means from baseline (used for NaN imputation)."""
     means: Dict[str, float] = {}
     for feat in FEATURE_NAMES:
-        vals = [float(r.get(feat, DEFAULTS[feat])) for r in records]
-        means[feat] = float(np.mean(vals)) if vals else DEFAULTS[feat]
+        vals = [float(r[feat] if r.get(feat) is not None else DEFAULTS[feat]) for r in records]
+        means[feat] = float(np.mean(vals)) if len(vals) > 0 else float(DEFAULTS[feat])
     return means
 
 
@@ -232,15 +241,15 @@ def _compute_shap(model: Any, X: np.ndarray) -> List[Dict[str, Any]]:
         if all(v == 0 for v in vals):
             return []
 
-        features = []
+        out_features: List[Dict[str, Any]] = []
         for i, name in enumerate(FEATURE_NAMES):
-            w = float(vals[i]) if hasattr(vals, "__getitem__") else 0.0
-            features.append({
+            w = float(vals[i]) if hasattr(vals, "__getitem__") else 0.0  # type: ignore[index]
+            out_features.append({
                 "feature":   name.replace("_", " "),
-                "weight":    float(round(abs(w), 6)),
+                "weight":    float(int(abs(w) * 1000000)) / 1000000.0,
                 "direction": "positive" if w > 0 else "negative",
             })
-        return sorted(features, key=lambda x: float(x["weight"]), reverse=True)[:5]
+        return sorted(out_features, key=lambda x: float(str(x["weight"])), reverse=True)[:5]  # type: ignore[index]
     except Exception as exc:
         logger.warning("SHAP anomaly explainer failed (non-fatal): %s", exc)
         return []
@@ -282,7 +291,7 @@ async def detect_anomaly(session_data: Dict[str, Any], app_state: Any) -> Dict[s
             lv  = float(session_data.get("login_velocity", 1.0))
             cfl = min(1.0, float(session_data.get("consecutive_failed_logins", 0.0)) / 5.0)
             vel = min(1.0, max(0.0, (lv - 5.0) / 10.0))
-            score = float(round(min(1.0, fr * 0.4 + pe * 0.3 + vel * 0.15 + cfl * 0.15), 4))
+            score = float(int(min(1.0, fr * 0.4 + pe * 0.3 + vel * 0.15 + cfl * 0.15) * 10000)) / 10000.0
             verdict = (
                 "MALICIOUS"   if score >= AnomalyConfig.MALICIOUS_THRESHOLD
                 else "SUSPICIOUS" if score >= AnomalyConfig.SUSPICIOUS_THRESHOLD
@@ -300,8 +309,8 @@ async def detect_anomaly(session_data: Dict[str, Any], app_state: Any) -> Dict[s
 
         def _score() -> Dict[str, Any]:
             # decision_function: positive = inlier, negative = outlier
-            df: float = float(model.decision_function(X)[0])
-            conf = float(round(_sigmoid(df), 4))
+            df = float(model.decision_function(X)[0]) if hasattr(model, "decision_function") else 0.0  # type: ignore[attr-defined]
+            conf = float(int(_sigmoid(df) * 10000)) / 10000.0
             verd = (
                 "MALICIOUS"   if conf >= AnomalyConfig.MALICIOUS_THRESHOLD
                 else "SUSPICIOUS" if conf >= AnomalyConfig.SUSPICIOUS_THRESHOLD

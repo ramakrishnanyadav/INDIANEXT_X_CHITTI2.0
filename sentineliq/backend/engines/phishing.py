@@ -54,7 +54,14 @@ def _normalize(text: str) -> str:
 
 async def load_phishing_model(app: FastAPI) -> None:  # type: ignore[misc]
     """Load HuggingFace phishing BERT pipeline. Graceful fallback on failure."""
-    cache_dir = os.getenv("MODEL_CACHE_DIR", "./model_cache")
+    is_serverless = os.getenv("VERCEL") == "1" or os.getenv("RENDER") == "true" or os.getenv("LIGHTWEIGHT_MODE", "false").lower() == "true"
+    if is_serverless:
+        app.state.phishing_model = None
+        app.state.phishing_mode = "heuristic_fallback (lightweight mode)"
+        logger.info("Serverless / Lightweight Mode enabled: Skipping Phishing BERT model load.")
+        return
+
+    cache_dir = os.getenv("MODEL_CACHE_DIR", "/tmp/model_cache" if is_serverless else "./model_cache")
     os.makedirs(cache_dir, exist_ok=True)
     try:
         loop = asyncio.get_event_loop()
@@ -97,18 +104,20 @@ def _heuristic_score(text: str) -> Dict[str, Any]:
     # Always normalize first
     normalized_text = _normalize(text)
 
-    triggered_categories = []
-    raw_score = 0.0
-    seen_weights = set()
+    triggered_categories: List[str] = []
+    raw_score: float = 0.0
+    seen_weights: set = set()
 
     for category, data in _COMPILED_SIGNALS.items():
-        for pattern in data["compiled"]:
+        data_dict: Dict[str, Any] = data  # type: ignore
+        for pattern in data_dict["compiled"]:
             if pattern.search(normalized_text):
                 # Each category contributes its weight only ONCE
                 if category not in seen_weights:
-                    raw_score += float(data["weight"])
-                    seen_weights.add(category)
-                triggered_categories.append(category)
+                    _w = float(str(data_dict.get("weight", 0.0)))
+                    raw_score = raw_score + _w  # type: ignore
+                    seen_weights.add(str(category))
+                triggered_categories.append(str(category))
                 break  # one match per category is enough
 
     # Cap at 1.0, apply sigmoid smoothing for confidence feel
@@ -116,10 +125,10 @@ def _heuristic_score(text: str) -> Dict[str, Any]:
     smoothed = 1 / (1 + math.exp(-4 * (capped - 0.5)))  # sigmoid centered at 0.5
 
     return {
-        "score": round(smoothed, 4),
+        "score": float(int(smoothed * 10000)) / 10000.0,
         "triggered": list(set(triggered_categories)),
         "signal_count": len(set(triggered_categories)),
-        "raw_score": round(raw_score, 4)
+        "raw_score": float(int(float(raw_score) * 10000)) / 10000.0
     }
 
 
@@ -168,7 +177,7 @@ def compute_absence_score(text: str) -> Dict[str, Any]:
         signals.append("no_legal_footer")
 
     return {
-        "absence_score": round(min(score, 0.50), 4),
+        "absence_score": float(int(min(score, 0.50) * 10000)) / 10000.0,
         "absence_signals": signals
     }
 
@@ -188,7 +197,7 @@ def _token_scores(text: str) -> List[Dict[str, Any]]:
                     PhishingConfig.SIGNAL_WEIGHTS.get(sig, PhishingConfig.DEFAULT_SIGNAL_WEIGHT)
                 )
         if float(matched_weight) > 0.0:
-            result.append({"token": word, "score": float(round(matched_weight, 4))})
+            result.append({"token": word, "score": float(int(float(matched_weight) * 10000)) / 10000.0})
         else:
             result.append({"token": word, "score": 0.04})
     return result
@@ -201,11 +210,13 @@ async def _gemini_phishing_judge(text: str, app_state: Any) -> Dict[str, Any]:
     if not getattr(app_state, "gemini_available", False):
         return {"confidence": 0.0, "reason": "Gemini unavailable"}
 
-    client: Optional[Any] = getattr(app_state, "gemini_client", None)
+    client = getattr(app_state, "gemini_client", None)
     if client is None:
         return {"confidence": 0.0, "reason": "No Gemini client"}
 
-    snippet: str = str(text)[:500]
+    _text_str = str(text)
+    # Pyre strings don't like slice notation sometimes, use explicit fallback
+    snippet: str = _text_str[:500] if len(_text_str) > 500 else _text_str  # type: ignore[index]
     prompt = PhishingConfig.GEMINI_PROMPT_TEMPLATE.format(snippet=snippet)
 
     try:
@@ -233,7 +244,7 @@ async def _gemini_phishing_judge(text: str, app_state: Any) -> Dict[str, Any]:
         if verdict != "MALICIOUS":
             conf = 1.0 - conf
         return {
-            "confidence": float(round(min(1.0, max(0.0, conf)), 4)),
+            "confidence": float(int(min(1.0, max(0.0, conf)) * 10000)) / 10000.0,
             "reason": str(parsed.get("reason", "")),
         }
     except json.JSONDecodeError:
@@ -269,11 +280,11 @@ async def detect_phishing(text: str, app_state: Any) -> Dict[str, Any]:
         model_conf = 0.0
         if model is not None and len(text.strip()) >= PhishingConfig.MIN_INPUT_LENGTH:
             try:
-                loop = asyncio.get_event_loop()
-                truncated = text[:PhishingConfig.MAX_INPUT_LENGTH]
+                _full_str = str(text)
+                truncated = _full_str[:PhishingConfig.MAX_INPUT_LENGTH] if len(_full_str) > PhishingConfig.MAX_INPUT_LENGTH else _full_str  # type: ignore[index]
 
                 def _infer() -> Any:
-                    return model(truncated)  # type: ignore[operator]
+                    return model(truncated) if callable(model) else []  # type: ignore
 
                 raw = await loop.run_in_executor(None, _infer)  # type: ignore[arg-type]
 
@@ -321,7 +332,7 @@ async def detect_phishing(text: str, app_state: Any) -> Dict[str, Any]:
             if gemini_conf > PhishingConfig.GEMINI_OVERRIDE_THRESHOLD:
                 mode = "gemini_layer_c_override"
 
-        final_conf = float(round(max(final_confidence, gemini_conf), 4))
+        final_conf = float(int(max(final_confidence, gemini_conf) * 10000)) / 10000.0
         # Always clamp to [0, 1]
         final_conf = min(1.0, max(0.0, final_conf))
 

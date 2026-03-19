@@ -260,7 +260,7 @@ def _features_to_shap(features: Dict[str, float]) -> List[Dict[str, Any]]:
             w = URLConfig.RULE_WEIGHTS.get(name, 0.5) * val
             shap.append({
                 "feature":   name.replace("_", " "),
-                "weight":    round(float(w), 4),
+                "weight":    float(int(float(w) * 10000)) / 10000.0,
                 "direction": "positive",
             })
     return sorted(shap, key=lambda x: float(x["weight"]), reverse=True)
@@ -271,9 +271,10 @@ def _features_to_shap(features: Dict[str, float]) -> List[Dict[str, Any]]:
 def _model_confidence(model: Any, url_str: str) -> float:
     """Run HuggingFace pipeline, return P(phishing) in [0, 1]."""
     try:
-        _url = str(url_str)[:512]
-        raw = model(_url)
-        result = raw[0] if isinstance(raw, list) else raw
+        _url = str(url_str)
+        _url = _url[:512] if len(_url) > 512 else _url  # type: ignore[index]
+        raw = model(_url) if callable(model) else []
+        result: Dict[str, Any] = raw[0] if isinstance(raw, list) and len(raw) > 0 else raw if isinstance(raw, dict) else {}  # type: ignore
         lbl = str(result.get("label", "")).lower().strip()
         sc = float(result.get("score", 0.5))
 
@@ -284,6 +285,7 @@ def _model_confidence(model: Any, url_str: str) -> float:
         else:
             logger.warning("URL model unknown label: %s", lbl)
             return 0.5
+        return 0.5
     except Exception as infer_exc:
         logger.warning("URL model inference error: %s", infer_exc)
         return 0.0
@@ -324,14 +326,21 @@ async def _fetch_and_analyze_dom(url: str, hostname: str) -> Dict[str, Any]:
             return {}
     except Exception as exc:
         logger.debug("DOM fetch failed for %s: %s", url, exc)
-        return {}
+    return {}
 
 
 # ─── Model loading ────────────────────────────────────────────────────────────
 
 async def load_url_model(app: Any) -> None:
     """Load BERT URL phishing classifier. Graceful fallback to rule-based engine."""
-    cache_dir = os.getenv("MODEL_CACHE_DIR", "./model_cache")
+    is_serverless = os.getenv("VERCEL") == "1" or os.getenv("RENDER") == "true" or os.getenv("LIGHTWEIGHT_MODE", "false").lower() == "true"
+    if is_serverless:
+        app.state.url_model = None
+        app.state.url_mode = "rule_based_fallback (lightweight mode)"
+        logger.info("Serverless / Lightweight Mode enabled: Skipping URL BERT model load.")
+        return
+
+    cache_dir = os.getenv("MODEL_CACHE_DIR", "/tmp/model_cache" if is_serverless else "./model_cache")
     os.makedirs(cache_dir, exist_ok=True)
     try:
         loop = asyncio.get_event_loop()
@@ -429,11 +438,10 @@ async def detect_url(url: str, app_state: Any) -> Dict[str, Any]:
 
         # Blend
         if model is None:
-            final_conf = float(round(rule_score, 4))
+            final_conf = float(int(rule_score * 10000)) / 10000.0
         else:
-            final_conf = float(round(
-                URLConfig.BERT_WEIGHT * model_conf + URLConfig.RULE_WEIGHT * rule_score, 4
-            ))
+            w_score = URLConfig.BERT_WEIGHT * model_conf + URLConfig.RULE_WEIGHT * rule_score
+            final_conf = float(int(w_score * 10000)) / 10000.0
 
         # Platt calibration (if calibrator was trained from a prior benchmark run)
         try:
