@@ -17,6 +17,7 @@ import {
   Wifi, WifiOff, RefreshCw, Zap, Shield,
 } from 'lucide-react';
 import { useFirestoreAnalytics } from '@/hooks/useFirestoreAnalytics';
+import { useAuth } from '@/hooks/useAuth';
 
 // ── Static engine info ────────────────────────────────────────────────────────
 const ENGINE_CARDS = [
@@ -71,12 +72,13 @@ const StatTile: React.FC<{ label: string; value: string | number; icon: React.Re
 
 // ── Main Component ────────────────────────────────────────────────────────────
 const ThreatAnalysis: React.FC = () => {
+  const { uid } = useAuth();
   const [chartType, setChartType] = useState<'bar' | 'line' | 'pie'>('bar');
   const {
     threatFreq, peakHours, severityDist,
     totalScans, totalMalicious, avgConfidence,
     recentIncidents, loading, error,
-  } = useFirestoreAnalytics();
+  } = useFirestoreAnalytics(uid);
 
   // ── Peak hour window ──────────────────────────────────────────────────────
   const peakHour = peakHours.reduce(

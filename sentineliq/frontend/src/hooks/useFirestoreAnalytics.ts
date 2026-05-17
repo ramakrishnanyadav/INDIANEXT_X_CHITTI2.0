@@ -7,7 +7,7 @@
  */
 import { useEffect, useState } from 'react'
 import { collection, onSnapshot, query, orderBy, limit } from 'firebase/firestore'
-import { db, initFirebaseAuth } from '@/lib/firebase'
+import { db } from '@/lib/firebase'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ function toRiskLevel(band: string, verdict: string): string {
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
-export function useFirestoreAnalytics(): AnalyticsData {
+export function useFirestoreAnalytics(uid: string | null): AnalyticsData {
   const [data, setData] = useState<AnalyticsData>({
     threatFreq: [], peakHours: [], severityDist: [],
     totalScans: 0, totalMalicious: 0, avgConfidence: 0,
@@ -90,15 +90,25 @@ export function useFirestoreAnalytics(): AnalyticsData {
   })
 
   useEffect(() => {
+    if (!uid) {
+      setData({
+        threatFreq: defaultThreatFreq(),
+        peakHours: Array.from({ length: 24 }, (_, i) => ({ hour: `${String(i).padStart(2, '0')}:00`, threats: 0 })),
+        severityDist: defaultSeverityDist(),
+        totalScans: 0, totalMalicious: 0, avgConfidence: 0,
+        recentIncidents: [], loading: false, error: null,
+      })
+      return
+    }
+
     let cancelled = false
 
     const bootstrap = async () => {
-      try { await initFirebaseAuth() } catch { /* ignore */ }
       if (cancelled) return
 
       try {
         const q = query(
-          collection(db, 'incidents'),
+          collection(db, 'users', uid, 'incidents'),
           orderBy('timestamp', 'desc'),
           limit(200),
         )
@@ -203,7 +213,7 @@ export function useFirestoreAnalytics(): AnalyticsData {
     let unsub: (() => void) | undefined
     bootstrap().then(fn => { unsub = fn })
     return () => { cancelled = true; unsub?.() }
-  }, [])
+  }, [uid])
 
   return data
 }
