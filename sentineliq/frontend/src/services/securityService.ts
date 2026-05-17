@@ -241,6 +241,7 @@ async function analyzeFile(
       threats: [], mode: 'offline_fallback',
       incident_id: '', threat_type: '', risk_band: '',
       processing_time_ms: 0, timestamp: new Date().toISOString(),
+      source: 'website', extension_version: '',
     }
   }
 }
@@ -282,6 +283,7 @@ async function analyzeText(
       threats: [], mode: 'offline_fallback',
       incident_id: '', threat_type: '', risk_band: '',
       processing_time_ms: 0, timestamp: new Date().toISOString(),
+      source: 'website', extension_version: '',
     }
   }
 }
