@@ -1,7 +1,7 @@
 """quick_test.py — test specific regex patterns against the CEO BEC email"""
 import re, sys
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8") # type: ignore
 
 text = (
     "Dear Finance Team, I am currently traveling and unable to access the corporate VPN. "
@@ -33,5 +33,7 @@ for name, pattern in patterns.items():
 print()
 # Now test the full heuristic
 from engines.phishing import _heuristic_score
-score = _heuristic_score(text)
+result = _heuristic_score(text)
+score = result.get('confidence', 0)
 print(f"Heuristic score for CEO BEC: {score:.4f}")
+print(f"Threat features: {result.get('threat_features', [])}")

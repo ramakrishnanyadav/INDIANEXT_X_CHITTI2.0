@@ -1,8 +1,34 @@
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("sentineliq.narration")
+
+# ── Quota / rate-limit cooldown tracker ───────────────────────────────────────
+# When Gemini returns a 429 or quota-exhausted error we pause all Gemini calls
+# for GEMINI_COOLDOWN_SECONDS so we stop hammering the API.
+_gemini_quota_exceeded_until: float = 0.0   # epoch time
+GEMINI_COOLDOWN_SECONDS: float = 300.0      # 5 minutes
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """Return True if the exception indicates a Gemini quota / rate-limit hit."""
+    msg = str(exc).lower()
+    return any(k in msg for k in ("429", "quota", "rate limit", "resource_exhausted", "rateLimitExceeded".lower()))
+
+
+def _mark_quota_exceeded() -> None:
+    global _gemini_quota_exceeded_until
+    _gemini_quota_exceeded_until = time.monotonic() + GEMINI_COOLDOWN_SECONDS
+    logger.warning(
+        "Gemini quota/rate-limit hit — entering offline-template mode for %.0f seconds.",
+        GEMINI_COOLDOWN_SECONDS,
+    )
+
+
+def _gemini_in_cooldown() -> bool:
+    return time.monotonic() < _gemini_quota_exceeded_until
 
 # ── Three-tier templates for every threat × verdict combo ─────────────────────
 TEMPLATES: Dict[str, Dict[str, Dict[str, str]]] = {
@@ -150,6 +176,14 @@ async def get_narration(
         f"Format: Explanation: ... Action: ...\n"
     )
 
+    # Skip Gemini entirely if we are in cooldown after a quota error
+    if _gemini_in_cooldown():
+        return {
+            "explanation": template["explanation"],
+            "action": template["action"],
+            "narration_mode": "offline_template_quota_cooldown",
+        }
+
     for tier, prompt, timeout in [
         ("gemini_tier1", prompt_t1, 4.0),
         ("gemini_tier2", prompt_t2, 3.0),
@@ -161,7 +195,7 @@ async def get_narration(
             def _call() -> Any:
                 assert _client is not None
                 return _client.models.generate_content(
-                    model="gemini-2.0-flash",
+                    model="gemini-2.5-flash-preview-04-17",
                     contents=_prompt,
                 )
 
@@ -191,6 +225,9 @@ async def get_narration(
         except asyncio.TimeoutError:
             logger.warning("Gemini narration %s timed out.", tier)
         except Exception as exc:
+            if _is_quota_error(exc):
+                _mark_quota_exceeded()
+                break  # skip tier 2 — quota is exhausted
             logger.warning("Gemini narration %s failed: %s", tier, exc)
 
     # Tier 3 — offline template always succeeds

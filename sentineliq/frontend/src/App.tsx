@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Navbar, Footer } from './components/Navigation';
 import Background from './components/Background';
@@ -41,8 +41,27 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 };
 
 const App: React.FC = () => {
+  const [toast, setToast] = useState<{message: string, type: string} | null>(null);
+
+  useEffect(() => {
+    const handleToast = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      setToast(customEvent.detail);
+      setTimeout(() => setToast(null), 5000);
+    };
+    window.addEventListener('security-toast', handleToast);
+    return () => window.removeEventListener('security-toast', handleToast);
+  }, []);
+
   return (
     <Router>
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-50 px-4 py-3 rounded bg-zinc-900/95 text-red-400 border border-red-500/30 shadow-2xl backdrop-blur flex items-center gap-3 animate-in fade-in slide-in-from-bottom-5">
+          <div className="h-2 w-2 rounded-full bg-red-500 animate-pulse" />
+          <span className="text-sm font-medium tracking-wide">{toast.message}</span>
+          <button onClick={() => setToast(null)} className="ml-2 opacity-60 hover:opacity-100">&times;</button>
+        </div>
+      )}
       <Routes>
         <Route path="/auth" element={<Auth />} />
         

@@ -12,13 +12,17 @@ No magic numbers exist in this file.
 """
 
 import os
-import logging
-import asyncio
 import re
 import json
+import math
+import time
+import asyncio
+import logging
 import unicodedata
-from typing import Any, Dict, List, Optional
-from fastapi import FastAPI  # type: ignore[import-untyped]
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI  # only used for type annotations — never at runtime
 
 # Must be set before transformers import
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -29,7 +33,6 @@ logger = logging.getLogger("sentineliq.phishing")
 from config import PhishingConfig, HOMOGLYPH_MAP  # type: ignore[import]
 
 # ─── Compile regex patterns once at module load (never inside functions) ──────
-import math
 
 _COMPILED_SIGNALS = {
     category: {
@@ -38,6 +41,29 @@ _COMPILED_SIGNALS = {
     }
     for category, data in PhishingConfig.HEURISTIC_SIGNALS.items()
 }
+
+# Legitimacy signals compiled once — used by compute_absence_score()
+# Source: PhishingConfig.LEGITIMACY_SIGNALS (never inline regex in hot paths)
+_COMPILED_LEGITIMACY = [
+    re.compile(p, re.IGNORECASE | re.UNICODE)
+    for p in PhishingConfig.LEGITIMACY_SIGNALS
+]
+
+# ─── Gemini Token Bucket (module-level, single-worker safe) ──────────────────
+# For multi-worker deployments migrate to Redis-backed bucket (see ARCHITECTURE.md).
+# asyncio.Lock protects the read-modify-write against concurrent coroutine access.
+# Lock is created lazily to avoid "no running event loop" on module import.
+_GEMINI_BUCKET_TOKENS: float = float(PhishingConfig.GEMINI_RATE_LIMIT_PER_MIN)
+_GEMINI_BUCKET_LAST_REFILL: float = time.monotonic()
+_GEMINI_BUCKET_LOCK: Optional[asyncio.Lock] = None
+
+
+def _get_gemini_lock() -> asyncio.Lock:
+    """Lazily create the token-bucket lock on first use inside a running event loop."""
+    global _GEMINI_BUCKET_LOCK
+    if _GEMINI_BUCKET_LOCK is None:
+        _GEMINI_BUCKET_LOCK = asyncio.Lock()
+    return _GEMINI_BUCKET_LOCK
 
 
 # ─── Homoglyph normalization ──────────────────────────────────────────────────
@@ -52,7 +78,7 @@ def _normalize(text: str) -> str:
 
 # ─── Model loading ────────────────────────────────────────────────────────────
 
-async def load_phishing_model(app: FastAPI) -> None:  # type: ignore[misc]
+async def load_phishing_model(app: "FastAPI") -> None:  # type: ignore[misc]
     """Load HuggingFace phishing BERT pipeline. Graceful fallback on failure."""
     is_serverless = os.getenv("VERCEL") == "1" or os.getenv("RENDER") == "true" or os.getenv("LIGHTWEIGHT_MODE", "false").lower() == "true"
     if is_serverless:
@@ -64,7 +90,7 @@ async def load_phishing_model(app: FastAPI) -> None:  # type: ignore[misc]
     cache_dir = os.getenv("MODEL_CACHE_DIR", "/tmp/model_cache" if is_serverless else "./model_cache")
     os.makedirs(cache_dir, exist_ok=True)
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _load() -> Any:
             from transformers import pipeline  # type: ignore[import]
@@ -120,7 +146,11 @@ def _heuristic_score(text: str) -> Dict[str, Any]:
                 triggered_categories.append(str(category))
                 break  # one match per category is enough
 
-    # Cap at 1.0, apply sigmoid smoothing for confidence feel
+    # Cap at 1.0, apply sigmoid smoothing for confidence feel.
+    # NOTE: sigmoid at capped=0 returns ~0.018, not 0.0.
+    # A completely clean text gets a non-zero score by design — it avoids
+    # hard 0% confidence in UI. Document this explicitly so tests/dashboards
+    # are not surprised. To get a true 0.0, check signal_count == 0 instead.
     capped = min(raw_score, 2.0)  # allow accumulation up to 2.0 before cap
     smoothed = 1 / (1 + math.exp(-4 * (capped - 0.5)))  # sigmoid centered at 0.5
 
@@ -136,9 +166,22 @@ def compute_absence_score(text: str) -> Dict[str, Any]:
     """
     Legitimate emails HAVE these things. Phishing often doesn't.
     Score based on what's MISSING, not just what's present.
+    IMPORTANT: Only penalize absence if there are also positive phishing signals.
+    A plain business email with no footer is NOT phishing — it just lacks formality.
+
+    Uses _COMPILED_LEGITIMACY (pre-compiled at module load from
+    PhishingConfig.LEGITIMACY_SIGNALS). Never calls re.compile() per request.
     """
     score = 0.0
     signals = []
+
+    # --- Positive legitimacy guard (pre-compiled at module load) ---
+    # If the email matches ANY legitimacy signal it is clearly benign in category.
+    # Block the absence scorer from firing on these.
+    for pat in _COMPILED_LEGITIMACY:
+        if pat.search(text):
+            # Email is clearly legitimate in category — absence scoring is NOT relevant
+            return {"absence_score": 0.0, "absence_signals": []}
 
     # No personal name used (Dear User vs Dear John)
     has_personal = bool(re.search(
@@ -146,7 +189,7 @@ def compute_absence_score(text: str) -> Dict[str, Any]:
         text
     ))
     if not has_personal:
-        score += 0.18
+        score += 0.12  # reduced from 0.18
         signals.append("no_personal_name")
 
     # No company/brand identity
@@ -155,7 +198,7 @@ def compute_absence_score(text: str) -> Dict[str, Any]:
         text
     ))
     if not has_brand:
-        score += 0.15
+        score += 0.10  # reduced from 0.15
         signals.append("no_brand_identity")
 
     # No contact information
@@ -164,7 +207,7 @@ def compute_absence_score(text: str) -> Dict[str, Any]:
         text
     ))
     if not has_contact:
-        score += 0.12
+        score += 0.08  # reduced from 0.12
         signals.append("no_contact_info")
 
     # No unsubscribe / legal footer (legit marketing always has this)
@@ -173,11 +216,11 @@ def compute_absence_score(text: str) -> Dict[str, Any]:
         text
     ))
     if not has_footer:
-        score += 0.10
+        score += 0.07  # reduced from 0.10
         signals.append("no_legal_footer")
 
     return {
-        "absence_score": float(int(min(score, 0.50) * 10000)) / 10000.0,
+        "absence_score": float(int(min(score, 0.30) * 10000)) / 10000.0,  # cap reduced from 0.50
         "absence_signals": signals
     }
 
@@ -205,61 +248,119 @@ def _token_scores(text: str) -> List[Dict[str, Any]]:
 
 # ─── Gemini Layer C ───────────────────────────────────────────────────────────
 
+async def _gemini_token_bucket_acquire() -> bool:
+    """
+    Async token bucket check for Gemini rate limiting.
+    Returns True if a token is available (call is allowed), False if rate-limited.
+    Refills at GEMINI_RATE_LIMIT_PER_MIN tokens per 60 seconds.
+    asyncio.Lock prevents race conditions when two coroutines call simultaneously.
+    """
+    global _GEMINI_BUCKET_TOKENS, _GEMINI_BUCKET_LAST_REFILL
+    async with _get_gemini_lock():
+        now = time.monotonic()
+        elapsed = now - _GEMINI_BUCKET_LAST_REFILL
+        # Refill proportionally to elapsed time
+        refill = elapsed * (PhishingConfig.GEMINI_RATE_LIMIT_PER_MIN / 60.0)
+        _GEMINI_BUCKET_TOKENS = min(
+            float(PhishingConfig.GEMINI_RATE_LIMIT_PER_MIN),
+            _GEMINI_BUCKET_TOKENS + refill
+        )
+        _GEMINI_BUCKET_LAST_REFILL = now
+        if _GEMINI_BUCKET_TOKENS >= 1.0:
+            _GEMINI_BUCKET_TOKENS -= 1.0
+            return True
+        return False
+
+
 async def _gemini_phishing_judge(text: str, app_state: Any) -> Dict[str, Any]:
-    """Layer C Gemini cross-validation to catch flawless LLM-generated phishing."""
+    """
+    Layer C: Gemini cross-validation to catch flawless LLM-generated phishing.
+    Implements:
+      - Token bucket rate limiting (max 8 calls/min, module-level)
+      - Exponential backoff on 429: 1s → 2s → 4s … up to 16s
+    Every skip or failure is logged with context so no Gemini event is silent.
+    """
     if not getattr(app_state, "gemini_available", False):
+        logger.warning("[Layer C] Skipped — Gemini unavailable (app_state flag not set)")
         return {"confidence": 0.0, "reason": "Gemini unavailable"}
 
     client = getattr(app_state, "gemini_client", None)
     if client is None:
+        logger.warning("[Layer C] Skipped — gemini_client is None")
         return {"confidence": 0.0, "reason": "No Gemini client"}
 
+    # Rate limit gate (async — protected by asyncio.Lock)
+    if not await _gemini_token_bucket_acquire():
+        logger.warning("[Layer C] Skipped — token bucket exhausted (rate limit: %d/min)",
+                       PhishingConfig.GEMINI_RATE_LIMIT_PER_MIN)
+        return {"confidence": 0.0, "reason": "Rate limited"}
+
     _text_str = str(text)
-    # Pyre strings don't like slice notation sometimes, use explicit fallback
-    snippet: str = _text_str[:500] if len(_text_str) > 500 else _text_str  # type: ignore[index]
+    snippet: str = _text_str[:500] if len(_text_str) > 500 else _text_str
     prompt = PhishingConfig.GEMINI_PROMPT_TEMPLATE.format(snippet=snippet)
 
-    try:
-        _c = client
-        _p = prompt
+    backoff = PhishingConfig.GEMINI_BACKOFF_BASE
+    last_exc: Exception = Exception("unknown")
 
-        def _call() -> Any:
-            return _c.models.generate_content(model="gemini-2.5-flash", contents=_p)
+    for attempt in range(4):  # max 4 attempts with backoff 1→2→4→8s (cap 16s)
+        try:
+            _c = client
+            _p = prompt
 
-        loop = asyncio.get_event_loop()
-        response: Any = await asyncio.wait_for(
-            loop.run_in_executor(None, _call),  # type: ignore[arg-type]
-            timeout=PhishingConfig.GEMINI_TIMEOUT,
-        )
-        raw: str = str(response.text).strip()
-        logger.debug("Gemini Phishing RAW: %s", raw)
+            def _call() -> Any:
+                return _c.models.generate_content(model="gemini-2.5-flash", contents=_p)
 
-        # Strip markdown fences
-        raw = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw)
+            loop = asyncio.get_event_loop()
+            response: Any = await asyncio.wait_for(
+                loop.run_in_executor(None, _call),  # type: ignore[arg-type]
+                timeout=PhishingConfig.GEMINI_TIMEOUT,
+            )
+            raw: str = str(response.text).strip()
+            logger.debug("Gemini Phishing RAW: %s", raw)
 
-        parsed = json.loads(raw)
-        verdict: str = str(parsed.get("verdict", "BENIGN")).upper()
-        conf: float = float(parsed.get("confidence", 0.0))
-        if verdict != "MALICIOUS":
-            conf = 1.0 - conf
-        return {
-            "confidence": float(int(min(1.0, max(0.0, conf)) * 10000)) / 10000.0,
-            "reason": str(parsed.get("reason", "")),
-        }
-    except json.JSONDecodeError:
-        logger.debug("Gemini Phishing JSON parse failed — using fallback")
-        return {"confidence": 0.0, "reason": "JSON parse error"}
-    except Exception as exc:
-        logger.debug("Gemini Phishing Layer C failed: %s", exc)
-        return {"confidence": 0.0, "reason": "Gemini failed"}
+            # Strip markdown fences
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw)
+
+            parsed = json.loads(raw)
+            verdict: str = str(parsed.get("verdict", "BENIGN")).upper()
+            conf: float = float(parsed.get("confidence", 0.0))
+            if verdict != "MALICIOUS":
+                conf = 1.0 - conf
+            return {
+                "confidence": float(int(min(1.0, max(0.0, conf)) * 10000)) / 10000.0,
+                "reason": str(parsed.get("reason", "")),
+            }
+
+        except json.JSONDecodeError as jde:
+            logger.warning("[Layer C] JSON parse failed on attempt %d: %s", attempt + 1, jde)
+            return {"confidence": 0.0, "reason": "JSON parse error"}
+
+        except Exception as exc:
+            last_exc = exc
+            exc_str = str(exc)
+            # Detect 429 rate-limit responses for backoff
+            if "429" in exc_str or "quota" in exc_str.lower() or "rate" in exc_str.lower():
+                wait = min(backoff, PhishingConfig.GEMINI_BACKOFF_MAX)
+                logger.warning(
+                    "[Layer C] 429 rate-limit on attempt %d — backing off %.1fs (scan affected)",
+                    attempt + 1, wait
+                )
+                await asyncio.sleep(wait)
+                backoff = min(backoff * 2, PhishingConfig.GEMINI_BACKOFF_MAX)
+            else:
+                logger.warning("[Layer C] API error on attempt %d: %s — skipping", attempt + 1, exc)
+                return {"confidence": 0.0, "reason": f"Gemini error: {exc_str[:120]}"}
+
+    logger.warning("[Layer C] All retry attempts exhausted: %s", last_exc)
+    return {"confidence": 0.0, "reason": "Max retries exceeded"}
 
 
 # ─── Public entry point ───────────────────────────────────────────────────────
 
-async def detect_phishing(text: str, app_state: Any) -> Dict[str, Any]:
+async def detect_phishing(text: str, app_state: Any, semantic_divergence: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Async phishing detector (3 layers).
+    Async phishing detector (3 layers + semantic divergence).
     Returns: { confidence, verdict, shap_features, mode, token_scores }
     Never raises.
     """
@@ -286,6 +387,7 @@ async def detect_phishing(text: str, app_state: Any) -> Dict[str, Any]:
                 def _infer() -> Any:
                     return model(truncated) if callable(model) else []  # type: ignore
 
+                loop = asyncio.get_event_loop()
                 raw = await loop.run_in_executor(None, _infer)  # type: ignore[arg-type]
 
                 # raw is list[list[dict]] when return_all_scores=True
@@ -322,7 +424,14 @@ async def detect_phishing(text: str, app_state: Any) -> Dict[str, Any]:
                 final_confidence = (0.75 * model_conf) + (0.25 * heuristic)
 
         absence = compute_absence_score(text)
-        final_confidence = min(1.0, final_confidence + absence["absence_score"] * 0.4)
+        # Only apply absence bonus if there are existing heuristic signals too.
+        # This is the key false-positive fix: plain business emails score 0 on
+        # heuristics and should NOT be pushed into SUSPICIOUS by absence alone.
+        if heuristic_result["signal_count"] > 0:
+            final_confidence = min(1.0, final_confidence + absence["absence_score"] * 0.35)
+        # If NO heuristic signals fired, absence alone should never cross SUSPICIOUS threshold
+        elif absence["absence_score"] > 0:
+            final_confidence = min(0.40, final_confidence + absence["absence_score"] * 0.2)
 
         # Gemini Layer C: trigger when standard confidence is below threshold
         gemini_conf = 0.0
@@ -336,8 +445,23 @@ async def detect_phishing(text: str, app_state: Any) -> Dict[str, Any]:
         # Always clamp to [0, 1]
         final_conf = min(1.0, max(0.0, final_conf))
 
-        TIER1_SIGNALS = {"urgency_threat_combo", "account_threat", "urgency_deadline"}
+        TIER1_SIGNALS = {"urgency_threat_combo", "account_threat", "urgency_deadline", "executive_impersonation"}
         tier1_fired = bool(set(triggered) & TIER1_SIGNALS)
+
+        if semantic_divergence and semantic_divergence.get("signals"):
+            div_score = float(semantic_divergence.get("score", 0.0))
+            if div_score >= 0.65:
+                # Floor final confidence and trigger Tier 1 equivalent
+                final_conf = max(final_conf, 0.65)
+                tier1_fired = True
+            for sig in semantic_divergence.get("signals", []):
+                sig_type = sig.get("type", "obfuscation").replace("_", " ").title()
+                attribution.append({
+                    "feature": f"[SEMANTIC DIVERGENCE] {sig_type}",
+                    "weight": round(div_score, 4),
+                    "direction": "positive",
+                    "category": "active_attack_signal",
+                })
 
         if tier1_fired and final_conf < 0.55:
             final_conf = 0.55  # floor — BERT cannot override strong social engineering
@@ -353,18 +477,57 @@ async def detect_phishing(text: str, app_state: Any) -> Dict[str, Any]:
 
         token_scores = _token_scores(text)
 
+        # ── Build Feature Attribution ────────────────────────────────────────
+        # Two distinct categories are tracked separately:
+        #   1. Active attack signals (positive heuristics that fired)
+        #   2. Trust signal absences (legitimacy markers that are MISSING)
+        # Keeping them separate lets analysts distinguish "active threat" from
+        # "suspicious-but-unverified" — a critical distinction for SOC review.
+
+        attribution: list = []
+
+        # Category 1: Active heuristic signals
+        signal_weight_map = {
+            cat: float(str(_COMPILED_SIGNALS[cat].get("weight", 0.0)))
+            for cat in _COMPILED_SIGNALS
+        }
+        for cat in triggered:
+            w = signal_weight_map.get(cat, 0.10)
+            label = cat.replace("_", " ").title()
+            attribution.append({
+                "feature":   label,
+                "weight":    round(w, 4),
+                "direction": "positive",
+                "category":  "active_attack_signal",
+            })
+
+        # Category 2: Absence signals (labeled distinctly)
+        for sig in absence.get("absence_signals", []):
+            label = "[TRUST MISSING] " + sig.replace("_", " ").title()
+            attribution.append({
+                "feature":   label,
+                "weight":    round(absence["absence_score"] / max(1, len(absence["absence_signals"])), 4),
+                "direction": "positive",
+                "category":  "trust_signal_absence",
+            })
+
+        # Sort: active signals first (higher weight), absences last
+        attribution.sort(key=lambda x: (x["category"] == "trust_signal_absence", -x["weight"]))
+
         return {
             "confidence":    final_conf,
             "verdict":       verdict,
-            "shap_features": [],
+            "shap_features": attribution,
             "mode":          mode,
             "token_scores":  token_scores,
         }
     except Exception as exc:
-        logger.error("detect_phishing unhandled error: %s", exc)
+        # Return ERROR — never BENIGN on unhandled exception in a security context.
+        # Returning BENIGN silently passes potentially malicious content.
+        logger.error("detect_phishing unhandled error: %s", exc, exc_info=True)
         return {
             "confidence":    0.0,
-            "verdict":       "BENIGN",
+            "verdict":       "ERROR",
             "shap_features": [],
             "mode":          "error_fallback",
             "token_scores":  [],

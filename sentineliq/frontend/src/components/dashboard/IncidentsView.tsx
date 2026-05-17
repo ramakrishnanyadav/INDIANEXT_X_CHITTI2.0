@@ -11,8 +11,13 @@ import {
   WifiOff,
   RefreshCw,
   TrendingUp,
+  Lock,
+  Trash2,
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useFirebaseIncidents } from '@/hooks/useFirebaseIncidents';
+import { useAuth } from '@/hooks/useAuth';
+import { securityService } from '@/services/securityService';
 import IncidentDetailModal from './IncidentDetailModal';
 import type { RiskLevel } from '@/types/security';
 
@@ -61,11 +66,29 @@ const RISK_STYLES: Record<RiskLevel, { bg: string; text: string; icon: React.Rea
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 const IncidentsView: React.FC = () => {
-  const { incidents, loading, error, isLive } = useFirebaseIncidents();
+  const { uid } = useAuth();
+  const navigate = useNavigate();
+  const { incidents, loading, error, isLive } = useFirebaseIncidents(uid);
   const [search, setSearch]   = useState('');
   const [filter, setFilter]   = useState<RiskLevel | 'All'>('All');
   const [showFilter, setShowFilter] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const handleDelete = async (incidentId: string) => {
+    if (!uid) return;
+    const confirmed = window.confirm('Permanently delete this incident from your history? This cannot be undone.');
+    if (!confirmed) return;
+    setDeletingId(incidentId);
+    try {
+      await securityService.deleteIncident(uid, incidentId);
+    } catch (err) {
+      console.error('Delete failed:', err);
+      alert('Delete failed. Please try again.');
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const filtered = useMemo(() => {
     let result = incidents;
@@ -86,8 +109,36 @@ const IncidentsView: React.FC = () => {
     low:      incidents.filter(i => i.riskLevel === 'Low').length,
   }), [incidents]);
 
+
   return (
     <>
+      {/* ── Sign-in gate for unauthenticated users ── */}
+      {!uid && (
+        <div className="h-full flex flex-col items-center justify-center gap-6 p-8 text-center">
+          <div className="h-16 w-16 rounded-[24px] bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center shadow-[0_0_40px_rgba(6,182,212,0.15)]">
+            <Lock className="h-8 w-8 text-cyan-400" />
+          </div>
+          <div className="space-y-2">
+            <h3 className="text-xl font-black text-white uppercase tracking-tighter">Your Private History</h3>
+            <p className="text-sm text-zinc-500 max-w-sm leading-relaxed font-medium">
+              Sign in to access your scan history. Your data is stored privately —
+              encrypted to your account, invisible to admins and other users.
+            </p>
+          </div>
+          <button
+            onClick={() => navigate('/auth')}
+            className="px-8 py-3 rounded-2xl bg-cyan-500 text-white text-[11px] font-black uppercase tracking-[0.2em] shadow-[0_0_30px_rgba(6,182,212,0.3)] hover:shadow-[0_0_50px_rgba(6,182,212,0.5)] hover:-translate-y-0.5 transition-all"
+          >
+            Sign In / Register
+          </button>
+          <p className="text-[9px] text-zinc-700 font-bold uppercase tracking-widest">
+            Scans work without login — sign in only required to save history
+          </p>
+        </div>
+      )}
+
+      {/* ── Main incidents view (signed in) ── */}
+      {uid && (
       <div className="p-8 space-y-6 h-full flex flex-col overflow-hidden">
 
       {/* ── Header ── */}
@@ -117,8 +168,8 @@ const IncidentsView: React.FC = () => {
           </div>
           <p className="text-zinc-500 text-sm font-bold uppercase tracking-widest">
             {isLive
-              ? `${incidents.length} events synced from Firestore`
-              : 'Chronological log of detected security events'}
+              ? `${incidents.length} private events — visible only to you`
+              : 'Your chronological log of detected security events'}
           </p>
         </div>
 
@@ -303,8 +354,13 @@ const IncidentsView: React.FC = () => {
                         View Deep Analysis →
                       </button>
                       <div className="h-1 w-1 rounded-full bg-zinc-800" />
-                      <button className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.2em] hover:text-white transition-colors">
-                        Archive
+                      <button
+                        onClick={() => handleDelete(incident.id)}
+                        disabled={deletingId === incident.id}
+                        className="flex items-center gap-1.5 text-[10px] font-black text-zinc-600 uppercase tracking-[0.2em] hover:text-red-400 transition-colors disabled:opacity-40"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                        {deletingId === incident.id ? 'Deleting…' : 'Delete'}
                       </button>
                     </div>
                   </div>
@@ -314,12 +370,14 @@ const IncidentsView: React.FC = () => {
           </AnimatePresence>
         )}
       </div>
-    </div>
+      </div>
+      )}
 
     {/* Detail modal — rendered as sibling to avoid scroll clipping */}
-    {selectedId && (
+    {selectedId && uid && (
       <IncidentDetailModal
         incidentId={selectedId}
+        uid={uid}
         onClose={() => setSelectedId(null)}
       />
     )}

@@ -16,6 +16,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { securityService } from '@/services/securityService';
+import { useAuth } from '@/hooks/useAuth';
 import { cn } from '@/lib/utils';
 
 type InputType = 'unknown' | 'email' | 'url' | 'injection' | 'anomaly';
@@ -31,6 +32,7 @@ const ScanTools: React.FC = () => {
   const [fileResult, setFileResult] = useState<any>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const anomalyFileInputRef = useRef<HTMLInputElement>(null);
+  const { uid } = useAuth();  // uid=null if not signed in — scans still work
 
   // Real-time client-side validation
   useEffect(() => {
@@ -87,7 +89,7 @@ const ScanTools: React.FC = () => {
       let analysisResult;
 
       if (file) {
-        analysisResult = await securityService.analyzeFile(file, operation);
+        analysisResult = await securityService.analyzeFile(file, operation, uid);
         
         if (operation === 'anomaly') {
           setFileResult(analysisResult);
@@ -95,7 +97,7 @@ const ScanTools: React.FC = () => {
           setResult(analysisResult);
         }
       } else {
-        analysisResult = await securityService.analyzeText(input, operation, inputType);
+        analysisResult = await securityService.analyzeText(input, operation, inputType, uid);
         setResult(analysisResult);
       }
     } catch (error) {

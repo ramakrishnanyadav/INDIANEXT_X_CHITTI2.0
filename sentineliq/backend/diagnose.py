@@ -1,10 +1,15 @@
 """
 diagnose.py — Per-case diagnostic for anomaly + phishing engines.
-Run: venv\Scripts\python.exe -X utf8 diagnose.py
+Run: venv/Scripts/python.exe -X utf8 diagnose.py
 """
 import sys, os, asyncio
+
+print("========================================")
+print(" SentinelIQ Diagnostic Script")
+print("========================================")
+
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8") # type: ignore
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from unittest.mock import MagicMock

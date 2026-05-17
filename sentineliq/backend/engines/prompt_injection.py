@@ -15,8 +15,10 @@ import logging
 import time
 import unicodedata
 import cachetools  # type: ignore[import]
-from typing import Any, Dict, List, Optional
-from fastapi import FastAPI  # type: ignore[import-untyped]
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI  # type: ignore[import-untyped]
 
 logger = logging.getLogger("sentineliq.injection")
 
@@ -58,7 +60,7 @@ _compile_all()
 
 # ─── Startup ──────────────────────────────────────────────────────────────────
 
-async def compile_patterns(app: FastAPI) -> None:  # type: ignore[misc]
+async def compile_patterns(app: "FastAPI") -> None:  # type: ignore[misc]
     """Attach compiled patterns and session cache to app.state at startup."""
     app.state.pi_patterns = _COMPILED
     app.state.injection_mode = "regex_plus_gemini"
@@ -126,7 +128,7 @@ async def _layer_b_gemini(text: str, app_state: Any) -> Dict[str, Any]:
             def _call() -> Any:
                 return _c.models.generate_content(model="gemini-2.5-flash", contents=_p)
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             timeout = (
                 InjectionConfig.GEMINI_TIMEOUT
                 if attempt == 0
@@ -181,6 +183,7 @@ async def detect_injection(
     text: str,
     app_state: Any,
     session_id: Optional[str] = None,
+    escalation_mode: bool = False,
 ) -> Dict[str, Any]:
     """
     Two-layer prompt injection detector with stateful session memory.
@@ -209,6 +212,11 @@ async def detect_injection(
         # Layer B: run when uncertain OR to cross-check high-confidence hits
         layer_b_score: float = 0.0
         layer_b_reason: str = ""
+        # Layer B run condition:
+        # - score < 0.75: uncertain — Gemini used to confirm or deny
+        # - score >= 0.85: very high confidence — Gemini cross-checks to prevent false positives
+        # - 0.75 <= score < 0.85: high-confidence band deliberately skipped for performance.
+        #   These are strong regex hits that don't need cross-validation to be actionable.
         run_b = layer_a_score < 0.75 or layer_a_score >= 0.85
         if run_b:
             lb = await _layer_b_gemini(context_text, app_state)
@@ -226,8 +234,14 @@ async def detect_injection(
 
         combined = min(1.0, max(0.0, combined))
 
+        effective_threshold = (
+            InjectionConfig.MALICIOUS_THRESHOLD - 0.08
+            if escalation_mode else
+            InjectionConfig.MALICIOUS_THRESHOLD
+        )
+
         verdict: str = (
-            "MALICIOUS" if combined >= InjectionConfig.MALICIOUS_THRESHOLD
+            "MALICIOUS" if combined >= effective_threshold
             else "BENIGN"
         )
 
@@ -251,14 +265,17 @@ async def detect_injection(
             "mode":             mode,
         }
     except Exception as exc:
-        logger.error("detect_injection unhandled error: %s", exc)
+        logger.error("detect_injection unhandled error: %s", exc, exc_info=True)
+        # SECURITY: return ERROR, not BENIGN. A silent pass-through on unhandled
+        # exceptions is a security bug — it allows injections to be missed when
+        # the engine faults. Upstream pipeline must handle ERROR explicitly.
         return {
             "confidence":       0.0,
-            "verdict":          "BENIGN",
+            "verdict":          "ERROR",
             "shap_features":    [],
             "layer_a_score":    0.0,
             "layer_b_score":    0.0,
             "matched_patterns": [],
-            "reason":           "",
+            "reason":           f"Engine error: {exc}",
             "mode":             "error_fallback",
         }

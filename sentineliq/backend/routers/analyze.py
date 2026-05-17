@@ -8,7 +8,10 @@ import datetime
 from itertools import islice
 from typing import Any, Dict, List, Optional
 
-import fitz  # type: ignore  # pymupdf installs as fitz
+try:
+    import fitz  # type: ignore  # pymupdf installs as fitz
+except ImportError:
+    fitz = None
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel, field_validator  # type: ignore[import]
 
@@ -16,24 +19,31 @@ from engines.phishing import detect_phishing  # type: ignore[import]
 from engines.url_detector import detect_url  # type: ignore[import]
 from engines.prompt_injection import detect_injection  # type: ignore[import]
 from engines.anomaly import detect_anomaly  # type: ignore[import]
+from engines.email_detector import detect_email_vector  # type: ignore[import]
 from xai.gemini_narrator import get_narration  # type: ignore[import]
 from scoring.risk_scorer import compute_risk  # type: ignore[import]
 from scoring.ensemble import ensemble_vote  # type: ignore[import]
-from db.database import save_incident, get_historical_rate  # type: ignore[import]
+from db.database import get_historical_rate  # type: ignore[import]
+from services.firestore_writer import write_incident  # type: ignore[import]
 
 logger = logging.getLogger("sentineliq.analyze")
 router = APIRouter()
 
-VALID_THREAT_TYPES = {"phishing", "url", "prompt_injection", "anomaly"}
+VALID_THREAT_TYPES = {"phishing", "url", "prompt_injection", "anomaly", "email"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Pydantic v2 response models
 # ─────────────────────────────────────────────────────────────────────────────
 class ShapFeature(BaseModel):  # type: ignore[misc]
-    feature: str
-    weight: float
-    direction: str
+    feature:   str
+    weight:    float
+    direction: str = "positive"
+    # category distinguishes active attack signals from trust-signal absences.
+    # MUST be preserved in serialization — popup uses it for color-coding.
+    category:  str = "active_attack_signal"
+
+    model_config = {"extra": "allow"}  # pass-through any future engine fields
 
     @field_validator("weight")  # type: ignore[misc]
     @classmethod
@@ -68,6 +78,11 @@ class AnalysisResult(BaseModel):  # type: ignore[misc]
     processing_time_ms: int
     timestamp: str
     detection_mode: str
+    redirect_depth: int
+    tier_used: str
+    source: str
+    browser: str
+    extension_version: str
 
     @field_validator("confidence")  # type: ignore[misc]
     @classmethod
@@ -278,6 +293,7 @@ async def analyze(
     request: Request,
     threat_type: str = Form(...),
     content: str = Form(""),
+    semantic_divergence: Optional[str] = Form(None),
     session_id: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),  # type: ignore[assignment]
 ) -> AnalysisResult:
@@ -308,7 +324,13 @@ async def analyze(
         # 3. Route to correct engine
         if threat_type == "phishing":
             text = await _extract_text(file, content)
-            engine_result = await detect_phishing(text, app_state)
+            div_obj = None
+            if semantic_divergence:
+                try:
+                    div_obj = json.loads(semantic_divergence)
+                except Exception:
+                    pass
+            engine_result = await detect_phishing(text, app_state, div_obj)
             token_highlights_raw = list(engine_result.get("token_scores", []))
             shap_features_raw = list(engine_result.get("shap_features", []))
 
@@ -319,7 +341,8 @@ async def analyze(
 
         elif threat_type == "prompt_injection":
             text = await _extract_text(file, content)
-            engine_result = await detect_injection(text, app_state, session_id)
+            escalation_mode = getattr(request.state, "escalation_mode", False)
+            engine_result = await detect_injection(text, app_state, session_id, escalation_mode)
             shap_features_raw = list(engine_result.get("shap_features", []))
 
         elif threat_type == "anomaly":
@@ -350,12 +373,20 @@ async def analyze(
             else:
                 session = await _parse_session(file, content)
                 engine_result = await detect_anomaly(session, app_state)
+        elif threat_type == "email":
+            try:
+                vector = dict(json.loads(str(content)))
+            except Exception:
+                raise HTTPException(status_code=400, detail="Email threat requires JSON vector in content.")
+            engine_result = await detect_email_vector(vector, app_state)
             shap_features_raw = list(engine_result.get("shap_features", []))
 
         verdict: str = str(engine_result.get("verdict", "BENIGN"))
         conf_raw: float = float(engine_result.get("confidence", 0.0))
         confidence: float = float(int(conf_raw * 10_000 + 0.5)) / 10_000
         engine_mode: str = str(engine_result.get("mode", "unknown"))
+        redirect_depth: int = int(engine_result.get("redirect_depth", 0))
+        tier_used: str = str(engine_result.get("tier_used", "Tier 2"))
 
         # 3b. Ensemble vote (single-engine run, so only one result in list)
         ensemble_result = ensemble_vote([
@@ -370,15 +401,22 @@ async def analyze(
             escalation_bonus
         )
 
-        # 5. Narration
-        snippet = _truncate(str(content), 200)
-        narration: Dict[str, str] = await get_narration(
-            threat_type=threat_type,
-            verdict=verdict,
-            shap_features=shap_features_raw,
-            snippet=snippet,
-            app_state=app_state,
-        )
+        # 5. Narration (Email handles its own narration)
+        if threat_type == "email" and "explanation" in engine_result:
+            narration = {
+                "explanation": engine_result.get("explanation", ""),
+                "action": engine_result.get("action", ""),
+                "narration_mode": engine_result.get("mode", "vector_heuristic_ensemble")
+            }
+        else:
+            snippet = _truncate(str(content), 200)
+            narration: Dict[str, str] = await get_narration(  # type: ignore[no-redef]
+                threat_type=threat_type,
+                verdict=verdict,
+                shap_features=shap_features_raw,
+                snippet=snippet,
+                app_state=app_state,
+            )
 
         processing_time_ms: int = int((time.monotonic() - start) * 1000)
         timestamp: str = datetime.datetime.utcnow().isoformat() + "Z"
@@ -402,10 +440,25 @@ async def analyze(
             processing_time_ms=processing_time_ms,  # type: ignore[call-arg]
             timestamp=timestamp,  # type: ignore[call-arg]
             detection_mode=engine_mode,  # type: ignore[call-arg]
+            redirect_depth=redirect_depth, # type: ignore[call-arg]
+            tier_used=tier_used, # type: ignore[call-arg]
+            source=getattr(request.state, "source", "website"),  # type: ignore[call-arg]
+            browser="unknown",  # type: ignore[call-arg]
+            extension_version=getattr(request.state, "extension_version", ""),  # type: ignore[call-arg]
         )
 
-        # 7. Fire-and-forget Firestore save
-        await save_incident(result.model_dump())  # type: ignore[misc]
+        # ── PRIVACY: Firestore write intentionally removed from backend ──────────
+        # Incidents are written exclusively by the authenticated frontend under
+        # users/{uid}/incidents/{id} — enforced by Firestore security rules.
+        # The backend never touches user history; this is the privacy guarantee.
+        # (Exception: backend now writes extension-initiated scans since extension has no SDK)
+        await write_incident(
+            uid=getattr(request.state, "uid", None),
+            engine_result=result.model_dump(),
+            threat_type=threat_type,
+            extension_version=getattr(request.state, "extension_version", ""),
+            source=getattr(request.state, "source", "website")
+        )
 
         return result
 

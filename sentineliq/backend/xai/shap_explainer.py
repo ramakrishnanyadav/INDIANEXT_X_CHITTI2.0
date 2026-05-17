@@ -119,8 +119,8 @@ def explain_text(pipeline: Any, text: str) -> List[dict]:
         shap_values = explainer([truncated])
 
         # Extract token-level values
-        tokens: List[str] = list(shap_values.data[0])
-        values: List[float] = [float(v) for v in shap_values.values[0]]
+        tokens: List[str] = list(shap_values.data[0]) # type: ignore
+        values: List[float] = [float(v) for v in shap_values.values[0]] # type: ignore
 
         token_scores = []
         for tok, val in zip(tokens, values):

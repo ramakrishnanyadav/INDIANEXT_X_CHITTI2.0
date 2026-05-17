@@ -27,10 +27,12 @@ logger = logging.getLogger("sentineliq")
 
 from routers import analyze, incidents  # type: ignore[import]
 from engines.phishing import load_phishing_model  # type: ignore[import]
-from engines.url_detector import load_url_model  # type: ignore[import]
+from engines.url_detector import load_url_model, _WHOIS_EXECUTOR  # type: ignore[import]
 from engines.prompt_injection import compile_patterns  # type: ignore[import]
 from engines.anomaly import load_anomaly_model  # type: ignore[import]
 from db.database import init_firebase  # type: ignore[import]
+from config import validate_config  # type: ignore[import]
+from middleware.auth_middleware import AuthMiddleware  # type: ignore[import]
 
 async def init_gemini(app: FastAPI) -> None:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
@@ -53,9 +55,13 @@ async def init_gemini(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("━" * 50)
-    logger.info("  SentinelIQ — Starting up")
-    logger.info("━" * 50)
+    logger.info("\u2501" * 50)
+    logger.info("  SentinelIQ \u2014 Starting up")
+    logger.info("\u2501" * 50)
+
+    # Validate config FIRST — after logging is configured, not at import time.
+    # This logs GSB API key presence, Gemini key, etc.
+    validate_config()
 
     await init_firebase(app)
     await load_phishing_model(app)
@@ -64,18 +70,22 @@ async def lifespan(app: FastAPI):
     await load_anomaly_model(app)
     await init_gemini(app)
 
-    logger.info("━" * 50)
-    logger.info(f"  phishing  → {app.state.phishing_mode}")
-    logger.info(f"  url       → {app.state.url_mode}")
-    logger.info(f"  injection → {app.state.injection_mode}")
-    logger.info(f"  anomaly   → {app.state.anomaly_mode}")
-    logger.info(f"  firebase  → {app.state.firebase_mode}")
+    logger.info("\u2501" * 50)
+    logger.info(f"  phishing  \u2192 {app.state.phishing_mode}")
+    logger.info(f"  url       \u2192 {app.state.url_mode}")
+    logger.info(f"  injection \u2192 {app.state.injection_mode}")
+    logger.info(f"  anomaly   \u2192 {app.state.anomaly_mode}")
+    logger.info(f"  firebase  \u2192 {app.state.firebase_mode}")
     logger.info("  SentinelIQ ready.")
-    logger.info("━" * 50)
+    logger.info("\u2501" * 50)
 
     yield  # app runs here
 
     logger.info("SentinelIQ shutting down.")
+    # Gracefully shut down the WHOIS ThreadPoolExecutor so in-flight queries
+    # are allowed to complete rather than being abandoned mid-WHOIS lookup.
+    _WHOIS_EXECUTOR.shutdown(wait=True)
+    logger.info("WHOIS executor shut down cleanly.")
 
 
 app = FastAPI(
@@ -91,6 +101,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AuthMiddleware)
 
 app.include_router(analyze.router, prefix="/api/v1")
 app.include_router(incidents.router, prefix="/api/v1")

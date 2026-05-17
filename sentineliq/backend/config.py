@@ -6,8 +6,17 @@ No engine file may contain hardcoded magic numbers or inline string constants.
 """
 
 from typing import List, Dict, Any, Set
+import os
+import logging
 
-# ─────────────────────────────────────────────────────────────────────────────
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+logger = logging.getLogger("sentineliq.config")
+
 # Shared Homoglyph Map (used by both Phishing and Injection engines)
 # ─────────────────────────────────────────────────────────────────────────────
 HOMOGLYPH_MAP: Dict[str, str] = {
@@ -47,13 +56,20 @@ HOMOGLYPH_MAP: Dict[str, str] = {
 # ─────────────────────────────────────────────────────────────────────────────
 class PhishingConfig:
     MODEL_NAME: str = "ealvaradob/bert-finetuned-phishing"
-    BERT_WEIGHT: float = 0.65
-    HEURISTIC_WEIGHT: float = 0.35
+    # NOTE: BERT_WEIGHT / HEURISTIC_WEIGHT were removed — blending is dynamic
+    # (heuristic-dominant) and controlled via detect_phishing() thresholds below.
+    # Dead config is a bug; do not re-add unless wired into blending logic.
     MALICIOUS_THRESHOLD: float = 0.55
     SUSPICIOUS_THRESHOLD: float = 0.30
     GEMINI_TRIGGER_THRESHOLD: float = 0.55   # Run Gemini if standard_conf < this
     GEMINI_OVERRIDE_THRESHOLD: float = 0.85  # Gemini overrides if its conf > this
     GEMINI_TIMEOUT: float = 15.0
+    # Gemini rate limiting — module-level token bucket. Valid for single-worker
+    # deployments. For multi-worker/production scale, migrate to Redis-backed
+    # rate limiter (known gap — see ARCHITECTURE.md ADR section).
+    GEMINI_RATE_LIMIT_PER_MIN: int = 8
+    GEMINI_BACKOFF_BASE: float = 1.0    # seconds; doubles up to GEMINI_BACKOFF_MAX
+    GEMINI_BACKOFF_MAX: float = 16.0
     MAX_INPUT_LENGTH: int = 512
     MIN_INPUT_LENGTH: int = 3
 
@@ -216,7 +232,7 @@ class PhishingConfig:
 
         # User's previous executive impersonation
         "executive_impersonation": {
-            "weight": 0.40,
+            "weight": 0.75,
             "patterns": [
                 r"(?i)(ceo|cfo|cto|president|director|vp|executive).{0,30}(request|urgent|wire|transfer|payment)",
                 r"(?i)on behalf of.{0,20}(executive|management|leadership|ceo|cfo)",
@@ -227,8 +243,62 @@ class PhishingConfig:
                 r"(?i)(new\s+vendor|new\s+supplier|new\s+bank|new\s+account).{0,100}(payment|transfer|deposit|wire)",
                 r"(?i)(late\s+penalt|late\s+fee|penalt).{0,50}(payment|transfer|invoice)",
             ]
+        },
+
+        # ── OPTION A: Generic behavioral signals (any domain/brand) ───────────
+        # These catch phishing that doesn't mention a specific brand at all.
+        # Layered with brand signals for defense-in-depth (senior eng call).
+
+        "language_manipulation": {
+            # Emotional manipulation patterns used by ANY phisher, not brand-specific
+            "weight": 0.36,
+            "patterns": [
+                r"(?i)(your\s+)?(account|profile|access|subscription).{0,30}(has\s+been|will\s+be|is\s+being).{0,20}(flag|review|hold|audit|restrict)",
+                r"(?i)(we\s+)?(regret|apologize|inform).{0,40}(access|service|account).{0,30}(suspend|terminat|block|restrict)",
+                r"(?i)(respond|reply|contact).{0,20}(within|before|no\s+later\s+than).{0,20}(\d+\s*(hours?|days?|minutes?))",
+                r"(?i)(do\s+not\s+)?(ignore|delay|postpone).{0,30}(this\s+)?(message|notice|alert|email|warning)",
+                r"(?i)(this\s+is\s+)?(your\s+)?(final|last).{0,20}(warning|notice|chance|opportunity|reminder)",
+                r"(?i)(failure|failing).{0,20}(to\s+)?(respond|act|verify|confirm|comply).{0,30}(result|lead|cause).{0,30}(terminat|suspend|close|remov)",
+            ]
+        },
+
+        "credential_context": {
+            # Generic credential/identity harvesting — no brand needed
+            "weight": 0.38,
+            "patterns": [
+                r"(?i)(please|kindly|must|need\s+to).{0,20}(re-?enter|provide|submit|supply).{0,20}(your\s+)?(login|credential|password|pin|otp|code)",
+                r"(?i)(click|follow|use).{0,20}(the\s+)?(link|button|url|here).{0,30}(reset|recover|restore|regain).{0,20}(access|account|password)",
+                r"(?i)your\s+(session|token|authentication|verification).{0,20}(expired|invalid|revoked|reset)",
+                r"(?i)(two-?factor|2fa|multi-?factor|mfa).{0,30}(reset|bypass|disabled|override|expir)",
+                r"(?i)(re-?verify|re-?authenticate|re-?validate|re-?confirm).{0,30}(identity|account|access|ownership)",
+            ]
+        },
+
+        "social_proof_abuse": {
+            # Fake authority / trust signals used across all phishing genres
+            "weight": 0.30,
+            "patterns": [
+                r"(?i)(our\s+)?(security|fraud|trust|risk|compliance|legal).{0,20}(team|department|division|officer).{0,30}(detect|identify|flag|review)",
+                r"(?i)(automated|system|ai|bot).{0,20}(detect|identify|flag|scan|monitor).{0,30}(suspicious|unusual|unauthorized|anomalous)",
+                r"(?i)(protect|securing|safeguarding).{0,20}(your|our).{0,20}(account|data|information|identity)",
+                r"(?i)(this\s+is\s+an?\s+)?(automated|official|system|security).{0,20}(notification|message|alert|warning)",
+                r"(?i)(reference|case|ticket|incident)\s*(number|#|id|no\.?).{0,20}[A-Z0-9\-]{4,20}",
+            ]
         }
     }
+
+    # Compiled legitimacy signals — used by compute_absence_score().
+    # Compiled ONCE here so the function never calls re.compile() per-request.
+    LEGITIMACY_SIGNALS: List[str] = [
+        r'(?i)\bgithub\.com\b',
+        r'(?i)\blinkedin\.com\b',
+        r'(?i)\b(confluence|jira|slack|notion|trello)\b',
+        r'(?i)\b(your order|shipped|tracking number|delivery estimate|invoice #)\b',
+        r'(?i)\b(meeting|standup|sprint|agenda|pr was merged|pull request)\b',
+        r'(?i)\b(quarterly|earnings|statement|report attached|financial)\b',
+        r'(?i)\b(newsletter|weekly update|digest|subscription confirmed)\b',
+        r'(?i)(fedex|ups|dhl|usps)\.com\b',
+    ]
 
     GEMINI_PROMPT_TEMPLATE: str = (
         "You are a spear-phishing and social engineering detector.\n"
@@ -243,10 +313,44 @@ class PhishingConfig:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# API & Live Threat Feed Configuration (Universal Fallbacks)
+# ─────────────────────────────────────────────────────────────────────────────
+# NOTE: `import os` is already at the top of this file. Duplicate removed.
+
+class APIConfig:
+    # URLhaus Configuration
+    URLHAUS_API_URL: str = "https://urlhaus-api.abuse.ch/v1/url/"
+    URLHAUS_TIMEOUT: float = 1.0
+    URLHAUS_FALLBACK_BEHAVIOR: str = "graceful_degrade" # If unavailable, proceed with heuristic score
+
+    # Google Safe Browsing Configuration
+    SAFE_BROWSING_API_KEY: str = os.getenv("SAFE_BROWSING_API_KEY", "")
+    # NOTE: Logger calls deliberately NOT placed here (class body runs at import time,
+    # before logging is fully configured). Call validate_config() at app startup instead.
+
+    SAFE_BROWSING_API_URL: str = "https://safebrowsing.googleapis.com/v4/threatMatches:find"
+    SAFE_BROWSING_TIMEOUT: float = 1.5
+    SAFE_BROWSING_RATE_LIMIT_WARNING: float = 0.9 # Log warning if we hit 90% quota
+    SAFE_BROWSING_FALLBACK_BEHAVIOR: str = "degrade_confidence"
+    SAFE_BROWSING_FALLBACK_PENALTY: float = -0.05 # Reduce confidence slightly if we can't confirm with API
+
+
+def validate_config() -> None:
+    """Log configuration state at startup. Call this from main.py lifespan, not at import time."""
+    if APIConfig.SAFE_BROWSING_API_KEY:
+        logger.info("Google Safe Browsing API Key loaded.")
+    else:
+        logger.warning("Google Safe Browsing API Key NOT found. GSB Live Feeds will be skipped.")
+
+# ─────────────────────────────────────────────────────────────────────────────
 # URL Engine Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 class URLConfig:
     MODEL_NAME: str = "ealvaradob/bert-finetuned-phishing"
+    # BERT_WEIGHT and RULE_WEIGHT ARE ACTIVE — consumed by the blending formula:
+    #   detect_url(): w_score = BERT_WEIGHT * model_conf + RULE_WEIGHT * rule_score
+    # These were NOT removed. Only PhishingConfig.BERT_WEIGHT / HEURISTIC_WEIGHT were
+    # removed (those were dead config). These URLConfig ones are live.
     BERT_WEIGHT: float = 0.65
     RULE_WEIGHT: float = 0.35
     MALICIOUS_THRESHOLD: float = 0.60
@@ -254,19 +358,21 @@ class URLConfig:
     WHOIS_NEW_DOMAIN_DAYS: int = 30
     WHOIS_VERY_NEW_DOMAIN_DAYS: int = 7
     WHOIS_TIMEOUT_SECONDS: int = 3
+    WHOIS_MAX_WORKERS: int = 4          # ThreadPoolExecutor ceiling for WHOIS I/O
     DOM_FETCH_TIMEOUT: float = 3.0
+    DOM_VERIFY_SSL: bool = True          # Set False only in controlled test envs
     MAX_URL_LENGTH: int = 100      # URLs longer than this get a mild score bump
     EXCESSIVE_SUBDOMAIN_DOTS: int = 3  # More than this many dots = suspicious
 
-    TRUSTED_DOMAINS: List[str] = [
-        "google.com", "github.com", "microsoft.com", "apple.com",
-        "amazon.com", "linkedin.com", "stackoverflow.com",
-        "python.org", "openai.com", "anthropic.com",
-        "cloudflare.com", "fastly.net", "akamaihd.net",
-        "wikipedia.org", "mozilla.org", "w3.org",
-        "facebook.com", "instagram.com", "twitter.com", "x.com",
-        "docs.python.org", "pypi.org",
-    ]
+    TRANCO_TOP_10K_URL: str = "https://tranco-list.eu/top-1m.csv.zip"  # We will extract top 10k
+    TRANCO_CACHE_FILE: str = "tranco_top10k_cache.json"
+
+    HOSTED_PLATFORMS: Set[str] = {
+        "vercel.app", "netlify.app", "firebaseapp.com",
+        "github.io", "notion.site", "herokuapp.com",
+        "onrender.com", "pages.dev", "weebly.com",
+        "wixsite.com", "wordpress.com", "blogspot.com"
+    }
 
     PRIVATE_IP_PREFIXES: List[str] = [
         "localhost", "127.", "10.", "192.168.",
@@ -331,6 +437,14 @@ class URLConfig:
         "no_https":                  0.20,
         "at_routing":                0.95,
         "keyword_stacking":          0.75,
+        # Generic structural signals — compiled from GENERIC_URL_PATTERNS
+        "deceptive_subdomain":       0.88,  # legit-brand.com.attacker.xyz
+        "path_keyword_stacking":     0.72,  # /verify/account/secure/login/
+        "generic_abuse_keywords":    0.68,  # any domain with abuse keywords in path
+        "numeric_subdomain":         0.65,  # 1234.attacker.com
+        "redirect_chain_keyword":    0.70,  # ?redirect=, ?url=, ?next= in URL
+        # redirect_obfuscation lives here — processed uniformly with all other signals
+        "redirect_obfuscation":      0.85,
     }
 
     SUSPICIOUS_KEYWORDS: List[str] = [
@@ -338,9 +452,36 @@ class URLConfig:
         "secure-login", "banking-secure", "paypal-secure",
         "webscr", "validate-payment", "update-payment",
         "account-update-required", "account-suspended-notice",
+        "paypa1", "amaz0n", "g00gle", "micros0ft", "app1e",
     ]
 
-    # Compound keyword pairs — 2+ present = suspicious stacking
+    # ── OPTION A: Generic path/query structural abuse patterns ─────────────────
+    # These fire on the URL structure regardless of which brand is targeted.
+    # Provides broad coverage on novel / unbranded phishing infrastructure.
+    GENERIC_ABUSE_PATH_KEYWORDS: List[str] = [
+        "verify", "confirm", "secure", "login", "signin", "account",
+        "update", "validate", "authenticate", "reset", "recover",
+        "suspended", "blocked", "locked", "limited", "restricted",
+        "urgent", "action-required", "identity", "verification",
+        "credential", "password", "token", "otp", "2fa", "mfa",
+    ]
+
+    # Regex patterns for generic URL structural abuse (engine uses these)
+    GENERIC_URL_PATTERNS: List[str] = [
+        # Deceptive subdomain: legit-looking-brand.com.attacker.xyz
+        r"(?i)https?://[a-z0-9.-]+(paypal|google|amazon|apple|microsoft|bank|secure|verify)[a-z0-9.-]*\.[a-z]{2,6}\.[a-z]{2,6}",
+        # Path keyword stacking: 3+ abuse words in a single URL path
+        r"(?i)/(verify|confirm|secure|login|account|update|validate|authenticate|reset){1}[/_-](verify|confirm|secure|login|account|update|validate|authenticate|reset){1}",
+        # Open redirect abuse
+        r"(?i)[?&](redirect|url|next|return|goto|target|dest)=[hH][tT][tT][pP][sS]?://",
+        # Numeric subdomain (rare in legitimate sites)
+        r"(?i)https?://\d+\.[a-z0-9-]+\.[a-z]{2,}[/?]",
+        # Suspicious path depth with keyword overload (5+ segments with abuse keywords)
+        r"(?i)https?://[^/]+(/[a-z0-9-]{1,30}){5,}/(verify|confirm|secure|account|login)",
+    ]
+
+    # Compound keyword pairs — 2+ present in URL = suspicious stacking
+    # Scanning full URL string (hostname + path + query) per spec.
     PHISHING_KEYWORD_PAIRS: List[tuple] = [
         ("verify", "account"),
         ("suspend", "click"),
@@ -350,12 +491,21 @@ class URLConfig:
         ("validate", "credential"),
         ("account", "locked"),
         ("verify", "payment"),
+        # Additional pairs for hostname-embedded threat language
+        ("account", "suspend"),   # account-suspended-*.tld
+        ("suspend", "notice"),    # *-suspended-notice.tld
+        ("account", "notice"),    # account-*-notice.tld
+        ("login", "verify"),      # login-verify.tld
+        ("secure", "account"),    # secure-account.tld
     ]
 
     HIGH_WEIGHT_SIGNAL_THRESHOLD: float = 0.75  # Used for multi-signal boost
     MULTI_SIGNAL_BOOST_PER_HIT: float = 0.15
     MULTI_SIGNAL_BOOST_CAP: float = 0.30
     TRUSTED_DOMAIN_SCORE_CAP: float = 0.20
+    # Signal Override Rule: if any single feature weight >= this, force escalation.
+    # 2+ signals -> MALICIOUS, 1 signal -> SUSPICIOUS. Replaces former hardcoded 0.85.
+    SIGNAL_OVERRIDE_THRESHOLD: float = 0.85
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -523,6 +673,38 @@ class InjectionConfig:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Email Threat Engine Configuration (Enterprise Privacy-Safe Architecture)
+# ─────────────────────────────────────────────────────────────────────────────
+class EmailConfig:
+    MALICIOUS_THRESHOLD: float = 0.70
+    SUSPICIOUS_THRESHOLD: float = 0.50
+    WARNING_BANNER_THRESHOLD: float = 0.65
+    CRITICAL_BANNER_THRESHOLD: float = 0.85
+    
+    HIGH_RISK_ATTACHMENTS: Set[str] = {
+        ".zip", ".iso", ".scr", ".html", ".htm", ".docm", ".xlsm", ".exe", ".js", ".vbs", ".lnk"
+    }
+
+    # Vector Weights for Backend ML/Heuristic Scoring
+    FEATURE_WEIGHTS: Dict[str, float] = {
+        "urgency_score": 0.35,
+        "sender_mismatch": 0.30,
+        "attachment_risk": 0.25,
+        "homoglyph_detected": 0.20,
+        "link_count_anomaly": 0.10,
+        "suspicious_links": 0.35,
+    }
+    
+    GEMINI_PROMPT_TEMPLATE: str = (
+        "You are an enterprise email security analyst.\n"
+        "Analyze this structured threat feature vector. The email text is hidden for privacy.\n"
+        "Generate a clear, professional security briefing explaining WHY this email is a threat based on the signals.\n"
+        "Respond ONLY with valid JSON (no markdown fences):\n"
+        '{"explanation": "Clear 2-sentence explanation of the threat", "action": "Specific recommended action"}\n'
+        'Threat Signals: {signals}\n'
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Anomaly Engine Configuration
 # ─────────────────────────────────────────────────────────────────────────────
 class AnomalyConfig:
@@ -531,7 +713,11 @@ class AnomalyConfig:
     RANDOM_SEED: int = 42
     N_ESTIMATORS: int = 300
     MALICIOUS_THRESHOLD: float = 0.60
-    SUSPICIOUS_THRESHOLD: float = 0.55  # Raised: benign sessions score ~0.49; must sit below this
+    # SUSPICIOUS_THRESHOLD = 0.55 sits ABOVE the benign session baseline (~0.49).
+    # Benign sessions score below this threshold (i.e., score < 0.55 = not suspicious).
+    # The previous comment "must sit below this" was ambiguous — it's the SCORES of
+    # benign sessions that sit below this threshold, not the threshold itself.
+    SUSPICIOUS_THRESHOLD: float = 0.55
     SIGMOID_K: float = 8.0  # Sigmoid sharpness for score mapping
 
     FEATURE_NAMES: List[str] = [

@@ -201,7 +201,7 @@ async def load_anomaly_model(app: Any) -> None:
 
                 clf = IsolationForest(
                     n_estimators=AnomalyConfig.N_ESTIMATORS,
-                    contamination=AnomalyConfig.CONTAMINATION,
+                    contamination=AnomalyConfig.CONTAMINATION, # type: ignore
                     max_samples="auto",
                     random_state=AnomalyConfig.RANDOM_SEED,
                     n_jobs=-1,

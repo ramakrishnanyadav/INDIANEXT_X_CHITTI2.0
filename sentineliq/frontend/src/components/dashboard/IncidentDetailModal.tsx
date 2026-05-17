@@ -17,6 +17,7 @@ import type { RecentIncident } from '@/hooks/useFirestoreAnalytics';
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Props {
   incidentId: string;
+  uid: string;
   onClose: () => void;
 }
 
@@ -38,12 +39,12 @@ const THREAT_LABEL: Record<string, string> = {
 };
 
 // ── Component ─────────────────────────────────────────────────────────────────
-const IncidentDetailModal: React.FC<Props> = ({ incidentId, onClose }) => {
+const IncidentDetailModal: React.FC<Props> = ({ incidentId, uid, onClose }) => {
   const [incident, setIncident] = useState<RecentIncident | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const ref = doc(db, 'incidents', incidentId);
+    const ref = doc(db, 'users', uid, 'incidents', incidentId);
     const unsub = onSnapshot(ref, snap => {
       if (!snap.exists()) { setLoading(false); return; }
       const d = snap.data() as Record<string, any>;
@@ -64,7 +65,7 @@ const IncidentDetailModal: React.FC<Props> = ({ incidentId, onClose }) => {
       setLoading(false);
     }, () => setLoading(false));
     return unsub;
-  }, [incidentId]);
+  }, [incidentId, uid]);
 
   const vStyle = incident
     ? (VERDICT_STYLE[incident.verdict as keyof typeof VERDICT_STYLE] || VERDICT_STYLE.BENIGN)
