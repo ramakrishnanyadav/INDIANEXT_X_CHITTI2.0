@@ -53,45 +53,42 @@ function toTypeLabel(threatType: string): string {
   }
 }
 
-function adaptResult(raw: Record<string, unknown>) {
-  const confidence = typeof raw.confidence === 'number' ? raw.confidence : 0
-  const verdict    = typeof raw.verdict    === 'string' ? raw.verdict.toUpperCase() : 'BENIGN'
-  const riskScore  = typeof raw.risk_score === 'number' ? raw.risk_score : 0
+function adaptResult(raw: Record<string, unknown>, requestedThreatType?: string): Threat {
+  const confidence = typeof raw.confidence === 'number' ? raw.confidence : 0;
+  const verdict    = typeof raw.verdict    === 'string' ? raw.verdict.toUpperCase() : 'BENIGN';
+  const riskScore  = typeof raw.risk_score === 'number' ? raw.risk_score : 0;
+  
+  const explanation = typeof raw.explanation === 'string' 
+    ? raw.explanation 
+    : `Verdict: ${verdict} — Confidence: ${Math.round(confidence * 100)}%`;
 
-  const status =
-    verdict === 'MALICIOUS'  ? 'danger'  :
-    verdict === 'SUSPICIOUS' ? 'warning' :
-    'safe'
+  const action = typeof raw.action === 'string' ? raw.action : 'Monitor for anomalous behavior.';
+  const typeStr = typeof raw.threat_type === 'string' && raw.threat_type ? raw.threat_type : requestedThreatType || 'phishing';
 
-  const threats: { name: string; severity: string }[] = []
+  // Extract SHAP features into ShapData array
+  const shapData = [];
   if (Array.isArray(raw.shap_features)) {
     for (const f of raw.shap_features as Array<Record<string, unknown>>) {
-      if (parseFloat(String(f.weight ?? 0)) > 0.2) {
-        threats.push({
-          name:     String(f.feature ?? 'Unknown Signal'),
-          severity: parseFloat(String(f.weight ?? 0)) > 0.6 ? 'CRITICAL' : 'HIGH',
-        })
-      }
+      shapData.push({
+        feature: String(f.feature ?? 'Unknown'),
+        value: Math.round(parseFloat(String(f.weight ?? 0)) * 100)
+      });
     }
   }
 
   return {
-    status,
-    score:       Math.round(confidence * 100),
-    riskScore,
-    verdict,
-    details:     typeof raw.explanation === 'string' ? raw.explanation : 'Analysis complete.',
-    action:      typeof raw.action      === 'string' ? raw.action      : '',
-    threats,
-    mode:        raw.detection_mode ?? raw.narration_mode ?? 'heuristic',
-    incident_id: typeof raw.incident_id === 'string' ? raw.incident_id : '',
-    threat_type: typeof raw.threat_type === 'string' ? raw.threat_type : '',
-    risk_band:   typeof raw.risk_band   === 'string' ? raw.risk_band   : '',
-    processing_time_ms: typeof raw.processing_time_ms === 'number' ? raw.processing_time_ms : 0,
-    timestamp:   typeof raw.timestamp   === 'string' ? raw.timestamp   : new Date().toISOString(),
-    source:      typeof raw.source      === 'string' ? raw.source      : 'website',
-    extension_version: typeof raw.extension_version === 'string' ? raw.extension_version : '',
-  }
+    id: typeof raw.incident_id === 'string' && raw.incident_id !== '' 
+      ? raw.incident_id 
+      : `INC-FE-${crypto.randomUUID()}`,
+    type: typeStr as any,
+    riskScore: riskScore,
+    riskLevel: toRiskLevel(verdict, typeof raw.risk_band === 'string' ? raw.risk_band : ''),
+    explanation: explanation,
+    shapTokens: [],
+    shapData: shapData.length > 0 ? shapData : undefined,
+    recommendedAction: action,
+    timestamp: typeof raw.timestamp === 'string' ? raw.timestamp : new Date().toISOString(),
+  };
 }
 
 /**
@@ -234,15 +231,17 @@ async function analyzeFile(
     console.warn('[securityService.analyzeFile] backend unavailable:', err)
     // SECURITY: return OFFLINE not BENIGN — unavailability must never silently pass scans.
     // UI should show an explicit "Backend offline" state rather than a false clean result.
-    return {
-      status: 'offline', score: 0, riskScore: 0, verdict: 'OFFLINE',
-      details: 'Backend unavailable — ensure FastAPI is running on port 8000.',
-      action: 'Start the backend server to enable threat scanning.',
-      threats: [], mode: 'offline_fallback',
-      incident_id: '', threat_type: '', risk_band: '',
-      processing_time_ms: 0, timestamp: new Date().toISOString(),
-      source: 'website', extension_version: '',
-    }
+    return adaptResult({
+      verdict: 'BENIGN',
+      confidence: 0,
+      risk_score: 0,
+      explanation: 'Backend connection failed or Mixed Content blocked. Cannot analyze this file. Ensure the backend is deployed via HTTPS or run the frontend locally.',
+      action: 'Check backend status and API_BASE environment variable.',
+      mode: 'offline_fallback',
+      threat_type: threatType,
+      incident_id: `INC-FE-${crypto.randomUUID()}`,
+      timestamp: new Date().toISOString()
+    }, threatType);
   }
 }
 
@@ -276,15 +275,17 @@ async function analyzeText(
   } catch (err) {
     console.warn('[securityService.analyzeText] backend unavailable:', err)
     // SECURITY: return OFFLINE not BENIGN — unavailability must never silently pass scans.
-    return {
-      status: 'offline', score: 0, riskScore: 0, verdict: 'OFFLINE',
-      details: 'Backend unavailable — ensure FastAPI is running on port 8000.',
-      action: 'Start the backend server to enable threat scanning.',
-      threats: [], mode: 'offline_fallback',
-      incident_id: '', threat_type: '', risk_band: '',
-      processing_time_ms: 0, timestamp: new Date().toISOString(),
-      source: 'website', extension_version: '',
-    }
+    return adaptResult({
+      verdict: 'BENIGN',
+      confidence: 0,
+      risk_score: 0,
+      explanation: 'Backend connection failed or Mixed Content blocked. Cannot analyze this text. Ensure the backend is deployed via HTTPS or run the frontend locally.',
+      action: 'Check backend status and API_BASE environment variable.',
+      mode: 'offline_fallback',
+      threat_type: threatType,
+      incident_id: `INC-FE-${crypto.randomUUID()}`,
+      timestamp: new Date().toISOString()
+    }, threatType);
   }
 }
 
