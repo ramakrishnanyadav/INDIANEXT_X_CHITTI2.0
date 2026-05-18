@@ -1113,15 +1113,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 });
 
-// ── v3.0 Alarms — anomaly heartbeat ──────────────────────────────────────────
-// onInstalled: idempotent alarm creation. chrome.alarms.create is safe to call
-// with the same name; it replaces any existing alarm of that name.
+// ── v3.0 Alarms ───────────────────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create('anomaly_heartbeat', {
     periodInMinutes: ANOMALY_HEARTBEAT_INTERVAL_MIN,
   });
-  // Record current device fingerprint for anomaly baseline
-  // navigator is not available in MV3 service workers — set empty string (OK)
+  // Keep Render free tier alive: ping every 10 min to prevent 15-min sleep.
+  // Cost: one lightweight GET per 10 min — negligible bandwidth.
+  chrome.alarms.create('backend_keepalive', { periodInMinutes: 10 });
+
   chrome.storage.local.get('siq_known_device').then(({ siq_known_device }) => {
     if (!siq_known_device) {
       chrome.storage.local.set({ siq_known_device: 'chrome_extension_worker' });
@@ -1129,8 +1129,21 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+// Also ping once immediately when the SW wakes (covers the first cold-start).
+// /health returns fast (no ML), so this doesn't block anything.
+fetch(`${DEFAULT_BACKEND}/health`, { signal: AbortSignal.timeout(30000) })
+  .catch(() => {}); // fire-and-forget — never throw
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  // ── Cold-start auto-retry ─────────────────────────────────────────────────
+  // ── Backend keep-alive ping ───────────────────────────────────────────────
+  // Fires every 10 min. Sends a cheap GET /health to Render so the dyno
+  // never reaches the 15-min idle threshold and goes to sleep.
+  if (alarm.name === 'backend_keepalive') {
+    fetch(`${currentBackendUrl}/health`, { signal: AbortSignal.timeout(30000) })
+      .catch(() => {}); // fire-and-forget
+    return;
+  }
+
   // Fires ~15 s after a SCAN_PAGE got an ERROR (backend was sleeping).
   // Re-runs scanUrl. If the backend is now warm, updates the badge and cache.
   // If still cold, silently gives up (no infinite retry loop).
