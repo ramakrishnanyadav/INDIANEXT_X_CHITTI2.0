@@ -212,9 +212,14 @@ function _whitelistAdd(url) {
   const normalized = _normalizeUrl(url);
   _approvedUrls.add(normalized); // Layer 1 — synchronous, instant
 
-  // Also purge the scan cache for this URL so the webNavigation listener
-  // doesn't find a stale MALICIOUS result and re-block the user.
-  chrome.storage.local.remove(safeCacheKey('c_', url));
+  // Purge ALL engine caches for this URL so no stale MALICIOUS verdict
+  // from any engine can re-trigger the block via webNavigation or SCAN_PAGE.
+  // Each engine uses a different prefix: c_ (url/phishing), inj_, ano_
+  chrome.storage.local.remove([
+    safeCacheKey('c_',   url),  // URL structural + merged page result
+    safeCacheKey('inj_', url),  // Prompt injection cache
+    safeCacheKey('ano_', url),  // Anomaly detection cache
+  ]);
 
   return chrome.storage.local
     .get('siq_whitelist')
@@ -224,8 +229,8 @@ function _whitelistAdd(url) {
       for (const [key, entry] of Object.entries(siq_whitelist)) {
         if (now >= entry.expires) delete siq_whitelist[key];
       }
-      // Write new entry
-      siq_whitelist[normalized] = { expires: now + 60 * 60 * 1000 }; // 1 hr
+      // Write new entry (1 hour expiry)
+      siq_whitelist[normalized] = { expires: now + 60 * 60 * 1000 };
       return chrome.storage.local.set({ siq_whitelist });
     });
 }
@@ -238,6 +243,19 @@ function _whitelistAdd(url) {
 function safeCacheKey(prefix, url) {
   // Prefix + full URL. chrome.storage.local keys can be arbitrary strings.
   return prefix + url;
+}
+
+/**
+ * safeSendMessage — guards against "Cannot read properties of undefined
+ * (reading 'sendMessage')" which occurs when chrome.runtime is invalidated
+ * mid-flight inside a .then() chain (e.g. extension reloaded while a scan
+ * was in progress, or SW was killed between await points).
+ * Use this everywhere instead of chrome.runtime.sendMessage(...).catch(() => {})
+ */
+function safeSendMessage(msg) {
+  try {
+    chrome.runtime?.sendMessage(msg)?.catch?.(() => {});
+  } catch (_) {}
 }
 
 function isLocal(url) {
@@ -367,9 +385,9 @@ async function _refreshToken(refreshToken) {
 
 async function _forceLogout(reason) {
   await chrome.storage.local.remove(['siq_auth', 'siq_refresh_fails']);
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     type: 'AUTH_STATE_CHANGED', loggedOut: true, reason,
-  }).catch(() => {});
+  });
 }
 
 /** Builds fetch headers with auth token and extension version. */
@@ -441,13 +459,27 @@ async function scanUrl(url) {
     await setCache(url, data);
     return data;
   } catch (err) {
-    // Do NOT cache error results — a timeout should not permanently poison the
-    // URL cache with MALICIOUS, which would cause webNavigation to re-block.
+    // Do NOT cache error results — a timeout must never permanently
+    // poison the URL cache with MALICIOUS.
+    //
+    // Distinguish timeout (cold-start) from other network failures
+    // so the popup gives the user actionable information.
+    const isTimeout = err.name === 'TimeoutError' ||
+                      err.name === 'AbortError'   ||
+                      (err.message || '').toLowerCase().includes('timeout');
     return {
-      verdict: 'ERROR', confidence: 0, risk_score: 0, risk_band: 'UNKNOWN',
-      shap_features: [], explanation: 'SentinelIQ backend unreachable.',
-      action: `Backend offline or cold-starting. Try again in a moment.`,
-      error: err.message,
+      verdict:    'ERROR',
+      confidence: 0,
+      risk_score: 0,
+      risk_band:  'UNKNOWN',
+      shap_features: [],
+      explanation: isTimeout
+        ? 'Backend is warming up (Render cold-start). Retry in ~10 seconds.'
+        : 'SentinelIQ backend unreachable. Check your connection.',
+      action: isTimeout
+        ? 'This is normal after a period of inactivity. The scan will work on retry.'
+        : `Verify backend is running at ${currentBackendUrl}.`,
+      error:  String(err.message || err),
     };
   }
 }
@@ -479,10 +511,16 @@ async function scanContent(text, semanticDivergence = null) {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return await resp.json();
   } catch (err) {
-    // Timeout or network failure — return null so mergeResults uses URL verdict only.
-    // Do NOT return an ERROR object; ERROR has priority 0 same as BENIGN,
-    // but null tells mergeResults to skip content and use urlResult as-is.
-    console.warn('[scanContent] backend unreachable, skipping content scan:', err.message);
+    // Timeout or network failure — return null so mergeResults falls back to
+    // urlResult only. Do NOT return an ERROR object (it has the same VERDICT_PRIORITY
+    // as BENIGN but would show a confusing state in the popup).
+    //
+    // DOMException (AbortError/TimeoutError) does not have a useful .message on all
+    // Chrome versions — use String(err) as fallback for clear console output.
+    const label = err.name === 'TimeoutError' || err.name === 'AbortError'
+      ? 'backend cold-starting (timeout)'
+      : String(err.message || err);
+    console.warn(`[scanContent] skipped — ${label}`);
     return null;
   }
 }
@@ -829,7 +867,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (tabId) setBadge(tabId, 'BENIGN');
           const r = BENIGN_FAST('User-approved bypass — 1 hr session whitelist active.');
           sendResponse({ result: r });
-          chrome.runtime.sendMessage({ type: 'PAGE_RESULT', result: r, url: msg.url }).catch(() => {});
+          safeSendMessage({ type: 'PAGE_RESULT', result: r, url: msg.url });
           return;
         }
 
@@ -853,7 +891,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               explanation: 'Backend offline or cold-starting — scan deferred. Reload to retry.',
             };
             sendResponse({ result: r });
-            chrome.runtime.sendMessage({ type: 'PAGE_RESULT', result: r, url: msg.url }).catch(() => {});
+            safeSendMessage({ type: 'PAGE_RESULT', result: r, url: msg.url });
             return; // Do NOT call setCache — don't poison cache with ERROR
           }
 
@@ -886,7 +924,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               }
             }
           }
-          chrome.runtime.sendMessage({ type: 'PAGE_RESULT', result: finalResult, url: msg.url }).catch(() => {});
+          safeSendMessage({ type: 'PAGE_RESULT', result: finalResult, url: msg.url });
           sendResponse({ result: finalResult });
         });
       })
@@ -908,7 +946,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // Cache under the page URL so popup reads this result
       setCache(url, result);
       if (tabId) { recordScan(url, result); setBadge(tabId, result.verdict); }
-      chrome.runtime.sendMessage({ type: 'PAGE_RESULT', result, url }).catch(() => {});
+      safeSendMessage({ type: 'PAGE_RESULT', result, url });
       sendResponse({ result });
     });
     return true;
@@ -975,11 +1013,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         action:        finalResult.action,
       }).catch(() => {});
 
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         type:   'EMAIL_RESULT',
         result: finalResult,
         url,
-      }).catch(() => {});
+      });
 
       sendResponse({ result: finalResult });
     });
@@ -1030,9 +1068,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         recordScan(msg.url, result);
         setBadge(tabId, merged.verdict);
       }
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         type: 'INJECTION_RESULT', result, url: msg.url,
-      }).catch(() => {});
+      });
       sendResponse({ result });
     });
     return true; // ← MANDATORY: async sendResponse
@@ -1049,9 +1087,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         recordScan(msg.url, result);
         setBadge(tabId, result.verdict);
       }
-      chrome.runtime.sendMessage({
+      safeSendMessage({
         type: 'ANOMALY_RESULT', result, url: msg.url,
-      }).catch(() => {});
+      });
       sendResponse({ result });
     });
     return true; // ← MANDATORY: async sendResponse
