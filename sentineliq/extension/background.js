@@ -1097,18 +1097,23 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 });
 
 // ── Navigation Interception (webNavigation) ───────────────────────────────────
+// Pre-checks the cache for known-MALICIOUS URLs before the page loads.
+// Whitelist check uses _whitelistRestorePromise + _whitelistHasSync — the same
+// pattern as SCAN_PAGE — so a SW restart never causes a false-block here.
 if (typeof chrome.webNavigation !== 'undefined') {
   chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
     const { tabId, url, frameId } = details;
     if (frameId !== 0) return;
     if (!url || url.startsWith('chrome://') || url.startsWith('chrome-extension://')) return;
-    if (isLocal(url)) return; // Never intercept local dev addresses
+    if (isLocal(url)) return;
 
     if (_intercepted.has(tabId)) { _intercepted.delete(tabId); return; }
 
+    // Wait for whitelist restore (resolves in <10ms, already settled on repeat calls)
+    await _whitelistRestorePromise;
+    if (_whitelistHasSync(url)) return; // user approved — never re-block
+
     const cached = await getCached(url);
-    const isWhitelisted = await _whitelistHas(url);
-    if (isWhitelisted) return;
     if (cached && cached.verdict === 'MALICIOUS' && (cached.risk_score || 0) >= 70) {
       _intercepted.add(tabId);
       await recordBlock(url);
