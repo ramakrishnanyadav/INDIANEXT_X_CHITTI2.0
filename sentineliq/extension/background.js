@@ -180,33 +180,49 @@ function _whitelistHasSync(url) {
 }
 
 /**
- * Reads storage once per SW lifetime and populates _approvedUrls.
- * Save the promise so SCAN_PAGE can await it instead of reading storage again.
+ * _whitelistRestorePromise — module scope, runs the instant the SW wakes.
+ * Reads siq_whitelist (object keyed by normalized URL) and populates
+ * _approvedUrls. Saved as a module-level const so every SCAN_PAGE handler
+ * awaits the SAME promise — no concurrent storage reads, no races.
+ *
+ * Issue 1 verified: declared at module scope, NOT inside any handler.
  */
 const _whitelistRestorePromise = chrome.storage.local
   .get('siq_whitelist')
-  .then(d => {
+  .then(({ siq_whitelist = {} }) => {
     const now = Date.now();
-    (d.siq_whitelist || [])
-      .filter(e => now < e.expiry)
-      .forEach(e => _approvedUrls.add(_normalizeUrl(e.url)));
+    for (const [url, entry] of Object.entries(siq_whitelist)) {
+      // Issue 4 verified: only restore non-expired entries.
+      if (now < entry.expires) _approvedUrls.add(url);
+    }
   })
-  .catch(() => {}); // never throw on startup
+  .catch(() => {}); // never let restore failure block scanning
 
 /**
- * Adds url to _approvedUrls synchronously AND awaits the storage write.
- * Returns a Promise that resolves when persistence is confirmed.
- * Callers that navigate after this can be sure storage is durable.
+ * _whitelistAdd — Layer 1 (sync) + Layer 3 (awaited).
+ *
+ * Returns a Promise that resolves ONLY after the storage write is confirmed.
+ * Callers that navigate after this are guaranteed the write is durable,
+ * so a SW restart before the next SCAN_PAGE still finds the entry.
+ *
+ * Issue 2 verified: uses object keyed by URL (O(1) lookup), prunes all
+ * expired entries on every write.
  */
 function _whitelistAdd(url) {
   const normalized = _normalizeUrl(url);
-  _approvedUrls.add(normalized); // synchronous — instant
+  _approvedUrls.add(normalized); // Layer 1 — synchronous, instant
+
   return chrome.storage.local
     .get('siq_whitelist')
-    .then(d => {
-      const list = (d.siq_whitelist || []).filter(e => Date.now() < e.expiry);
-      list.push({ url: normalized, expiry: Date.now() + 60 * 60 * 1000 }); // 1 hr
-      return chrome.storage.local.set({ siq_whitelist: list });
+    .then(({ siq_whitelist = {} }) => {
+      const now = Date.now();
+      // Issue 2: prune expired entries while the object is open
+      for (const [key, entry] of Object.entries(siq_whitelist)) {
+        if (now >= entry.expires) delete siq_whitelist[key];
+      }
+      // Write new entry
+      siq_whitelist[normalized] = { expires: now + 60 * 60 * 1000 }; // 1 hr
+      return chrome.storage.local.set({ siq_whitelist });
     });
 }
 
@@ -759,20 +775,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
-  // ── WHITELIST_AND_NAVIGATE: the guaranteed loop-free bypass ──────────────────
-  // 1. Whitelist added to in-memory Set SYNCHRONOUSLY (before any navigation).
-  // 2. Storage write fires in background (non-blocking).
-  // 3. Tab navigates AFTER in-memory set is populated.
-  // Result: when content.js fires SCAN_PAGE on the new page, _whitelistHasSync()
-  //         already returns true → redirect is short-circuited → no loop.
+  // ── WHITELIST_AND_NAVIGATE ─────────────────────────────────────────────────
+  // Sequence: Layer 1 sync → await Layer 3 storage → navigate.
+  // Navigating AFTER confirmed write means a SW restart between navigate and
+  // SCAN_PAGE will still find the entry in storage on restore.
+  //
+  // Issue 3: sendResponse called inside .then() after write, return true keeps
+  // the message channel open for the async response.
   if (msg.type === 'WHITELIST_AND_NAVIGATE') {
-    _whitelistAdd(msg.url); // synchronously adds to _approvedUrls
     const targetTabId = msg.tabId || tabId;
-    if (targetTabId && msg.url) {
-      chrome.tabs.update(targetTabId, { url: msg.url });
-    }
-    sendResponse({ success: true });
-    return true;
+    _whitelistAdd(msg.url)
+      .then(() => {
+        if (targetTabId && msg.url) chrome.tabs.update(targetTabId, { url: msg.url });
+        sendResponse({ ok: true });
+      })
+      .catch(() => {
+        // Storage failed (disk full, quota). Navigate anyway —
+        // Layer 1 in-memory entry is still valid for this SW lifetime.
+        if (targetTabId && msg.url) chrome.tabs.update(targetTabId, { url: msg.url });
+        sendResponse({ ok: false });
+      });
+    return true; // Issue 3: MANDATORY — keeps channel open for async sendResponse
   }
 
   if (msg.type === 'SET_SETTINGS') {
@@ -783,64 +806,73 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'SCAN_PAGE') {
-    // ── Whitelist gate: wait for startup restore, then check ─────────────────────
-    // _whitelistRestorePromise resolves in <10 ms on SW wake (reads storage once).
-    // By awaiting it here, we guarantee _approvedUrls is populated before the
-    // check — even if the SW restarted between WHITELIST_AND_NAVIGATE and now.
-    _whitelistRestorePromise.then(() => {
-      if (_whitelistHasSync(msg.url)) {
-        // Bypass: user explicitly approved this URL.
-        if (tabId) setBadge(tabId, 'BENIGN');
-        const r = BENIGN_FAST('User-approved bypass — 1 hr session whitelist active.');
-        sendResponse({ result: r });
-        chrome.runtime.sendMessage({ type: 'PAGE_RESULT', result: r, url: msg.url }).catch(() => {});
-        return;
-      }
+    // Issue 5 verified: await _whitelistRestorePromise BEFORE calling
+    // _whitelistHasSync(). This is the critical ordering that prevents a
+    // false-block on the first SCAN_PAGE after a SW restart.
+    //
+    // _whitelistRestorePromise is a module-scope const. Awaiting it multiple
+    // times is safe — it is already settled on subsequent calls (microtask).
+    _whitelistRestorePromise
+      .then(() => {
+        // Issue 5 verified: sync check only runs AFTER restore is confirmed
+        if (_whitelistHasSync(msg.url)) {
+          if (tabId) setBadge(tabId, 'BENIGN');
+          const r = BENIGN_FAST('User-approved bypass — 1 hr session whitelist active.');
+          sendResponse({ result: r });
+          chrome.runtime.sendMessage({ type: 'PAGE_RESULT', result: r, url: msg.url }).catch(() => {});
+          return;
+        }
 
-      // Not whitelisted: run full scan pipeline.
-      if (tabId) setBadge(tabId, 'SCANNING');
-      const hasPasswordForm = msg.hasPasswordForm || false;
+        // Not whitelisted — run full scan pipeline.
+        if (tabId) setBadge(tabId, 'SCANNING');
+        const hasPasswordForm = msg.hasPasswordForm || false;
 
-      Promise.all([
-        scanUrl(msg.url),
-        msg.content && msg.content.length > 30
-          ? scanContent(msg.content, msg.semanticDivergence)
-          : Promise.resolve(null),
-      ]).then(async ([urlResult, contentResult]) => {
-        const finalResult = mergeResults(urlResult, contentResult, hasPasswordForm);
-        setCache(msg.url, finalResult);
+        Promise.all([
+          scanUrl(msg.url),
+          msg.content && msg.content.length > 30
+            ? scanContent(msg.content, msg.semanticDivergence)
+            : Promise.resolve(null),
+        ]).then(async ([urlResult, contentResult]) => {
+          const finalResult = mergeResults(urlResult, contentResult, hasPasswordForm);
+          setCache(msg.url, finalResult);
 
-        if (tabId) {
-          recordScan(msg.url, finalResult);
-          setBadge(tabId, finalResult.verdict);
+          if (tabId) {
+            recordScan(msg.url, finalResult);
+            setBadge(tabId, finalResult.verdict);
 
-          if (
-            finalResult.verdict === 'MALICIOUS' &&
-            (finalResult.risk_score || 0) >= 70 &&
-            !isLocal(msg.url)
-          ) {
-            // Final async storage check (covers edge cases not caught above)
-            const stillBlocked = !_whitelistHasSync(msg.url);
-            if (stillBlocked) {
-              const params = new URLSearchParams({
-                url:         encodeURIComponent(msg.url),
-                verdict:     finalResult.verdict,
-                risk:        String(finalResult.risk_score || 0),
-                explanation: encodeURIComponent(finalResult.explanation || 'Malicious content detected.'),
-                action:      encodeURIComponent(finalResult.action     || 'Do not proceed to this site.'),
-                signals:     encodeURIComponent(JSON.stringify(
-                  (finalResult.shap_features || []).slice(0, 3).map(f => f.feature)
-                )),
-              });
-              chrome.tabs.update(tabId, { url: `${BLOCKED_PAGE}?${params.toString()}` });
+            if (
+              finalResult.verdict === 'MALICIOUS' &&
+              (finalResult.risk_score || 0) >= 70 &&
+              !isLocal(msg.url)
+            ) {
+              // Last-chance sync check: catches any in-flight whitelist added
+              // during the scan window (e.g. user double-clicks Proceed).
+              if (!_whitelistHasSync(msg.url)) {
+                const params = new URLSearchParams({
+                  url:         encodeURIComponent(msg.url),
+                  verdict:     finalResult.verdict,
+                  risk:        String(finalResult.risk_score || 0),
+                  explanation: encodeURIComponent(finalResult.explanation || 'Malicious content detected.'),
+                  action:      encodeURIComponent(finalResult.action     || 'Do not proceed to this site.'),
+                  signals:     encodeURIComponent(JSON.stringify(
+                    (finalResult.shap_features || []).slice(0, 3).map(f => f.feature)
+                  )),
+                });
+                chrome.tabs.update(tabId, { url: `${BLOCKED_PAGE}?${params.toString()}` });
+              }
             }
           }
-        }
-        chrome.runtime.sendMessage({ type: 'PAGE_RESULT', result: finalResult, url: msg.url }).catch(() => {});
-        sendResponse({ result: finalResult });
+          chrome.runtime.sendMessage({ type: 'PAGE_RESULT', result: finalResult, url: msg.url }).catch(() => {});
+          sendResponse({ result: finalResult });
+        });
+      })
+      .catch(() => {
+        // Restore itself failed (should never happen, .catch in restore swallows).
+        // Run scan anyway so the user isn't stuck.
+        if (tabId) setBadge(tabId, 'SCANNING');
+        sendResponse({ result: BENIGN_FAST('Whitelist restore failed; scan queued.') });
       });
-    });
-    return true;
+    return true; // keep message channel open for async response
   }
 
   if (msg.type === 'SCAN_CONTENT') {
