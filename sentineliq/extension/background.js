@@ -759,8 +759,10 @@ function setBadge(tabId, verdict) {
     ERROR:      { color: '#6b7280', text: '?' },
   };
   const { color, text } = map[verdict] || map.ERROR;
-  chrome.action.setBadgeBackgroundColor({ tabId, color });
-  chrome.action.setBadgeText({ tabId, text });
+  try {
+    chrome.action.setBadgeBackgroundColor({ tabId, color }).catch(() => {});
+    chrome.action.setBadgeText({ tabId, text }).catch(() => {});
+  } catch (err) {}
 }
 
 // ── Stats ────────────────────────────────────────────────────────────────────

@@ -35,16 +35,17 @@ chrome.runtime.sendMessage = function(message, callback) {
     return;
   }
   try {
+    let p;
     if (callback) {
-      _originalSendMessage(message, (resp) => {
+      p = _originalSendMessage(message, (resp) => {
         if (chrome.runtime.lastError) { /* ignore to suppress console error */ }
         callback(resp);
       });
     } else {
-      const p = _originalSendMessage(message);
-      if (p && typeof p.catch === 'function') p.catch(() => {});
-      return p;
+      p = _originalSendMessage(message);
     }
+    if (p && typeof p.catch === 'function') p.catch(() => {});
+    return p;
   } catch (err) {
     if (callback) callback(null);
   }
