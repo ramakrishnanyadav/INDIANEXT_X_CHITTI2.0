@@ -101,32 +101,38 @@
   proceedBtn.addEventListener('click', () => {
     if (proceedBtn.disabled || !consented) return;
 
-    // Show redirect overlay
+    // Show overlay immediately so user gets instant feedback
     const overlay = document.getElementById('redirect-overlay');
     const msg     = document.getElementById('redirect-msg');
     overlay.classList.add('visible');
-    msg.textContent = 'Whitelisting URL and bypassing protection…';
+    msg.textContent = 'Bypassing protection…';
 
-    // Send whitelist message to background; navigate on callback
-    const doNavigate = () => {
-      if (!destUrl) { overlay.classList.remove('visible'); return; }
+    // Fire the whitelist message — don't wait for response
+    if (destUrl && typeof chrome !== 'undefined' && chrome.runtime) {
+      chrome.runtime.sendMessage({ type: 'WHITELIST_URL', url: destUrl }).catch(() => {});
+    }
+
+    // Navigate immediately on the next frame
+    requestAnimationFrame(() => {
       msg.textContent = 'Navigating to destination…';
+
+      if (!destUrl) {
+        overlay.classList.remove('visible');
+        return;
+      }
+
       if (destUrl.toLowerCase().startsWith('file://')) {
+        // Chrome blocks chrome-extension:// → file:// navigation; go back in history
         history.back();
       } else {
-        chrome.runtime.sendMessage({ type: 'FORCE_NAVIGATE', url: destUrl });
+        // For web URLs use background worker which has full tab privileges
+        if (typeof chrome !== 'undefined' && chrome.runtime) {
+          chrome.runtime.sendMessage({ type: 'FORCE_NAVIGATE', url: destUrl });
+        } else {
+          window.location.href = destUrl;
+        }
       }
-    };
-
-    if (destUrl && typeof chrome !== 'undefined' && chrome.runtime) {
-      chrome.runtime.sendMessage({ type: 'WHITELIST_URL', url: destUrl }, () => {
-        doNavigate();
-      });
-      // Fallback if callback never fires (e.g., service worker sleeping)
-      setTimeout(doNavigate, 3000);
-    } else {
-      doNavigate();
-    }
+    });
   });
 
   // ── Return to Safety ─────────────────────────────────────────────────────────
