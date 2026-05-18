@@ -16,6 +16,13 @@
  */
 
 const DEFAULT_BACKEND = 'http://127.0.0.1:8000/api/v1';
+let currentBackendUrl = DEFAULT_BACKEND;
+
+// Load saved backend URL on startup
+chrome.storage.local.get('siq_backend_url').then(res => {
+  if (res.siq_backend_url) currentBackendUrl = res.siq_backend_url;
+});
+
 const CACHE_TTL_MS    = 30 * 60 * 1000; // 30 min
 const MAX_CACHE       = 500;
 const BLOCKED_PAGE    = chrome.runtime.getURL('blocked.html');
@@ -336,7 +343,7 @@ async function scanUrl(url) {
 
   try {
     const token = await getAuthToken();
-    const resp = await fetch(`${DEFAULT_BACKEND}/analyze`, {
+    const resp = await fetch(`${currentBackendUrl}/analyze`, {
       method: 'POST', body: fd,
       headers: _buildHeaders(token),
       signal: AbortSignal.timeout(12000),
@@ -347,7 +354,7 @@ async function scanUrl(url) {
       const fd2 = new FormData();
       fd2.append('threat_type', 'url');
       fd2.append('content', url);
-      const resp2 = await fetch(`${DEFAULT_BACKEND}/analyze`, {
+      const resp2 = await fetch(`${currentBackendUrl}/analyze`, {
         method: 'POST', body: fd2,
         headers: _buildHeaders(null),
         signal: AbortSignal.timeout(12000),
@@ -365,7 +372,7 @@ async function scanUrl(url) {
     return {
       verdict: 'ERROR', confidence: 0, risk_score: 0, risk_band: 'UNKNOWN',
       shap_features: [], explanation: 'SentinelIQ backend unreachable.',
-      action: 'Make sure the backend is running on localhost:8000.', error: err.message,
+      action: `Ensure your backend is running at ${currentBackendUrl}`, error: err.message,
     };
   }
 }
@@ -385,7 +392,7 @@ async function scanContent(text, semanticDivergence = null) {
 
   try {
     const token = await getAuthToken();
-    const resp = await fetch(`${DEFAULT_BACKEND}/analyze`, {
+    const resp = await fetch(`${currentBackendUrl}/analyze`, {
       method: 'POST', body: fd,
       headers: _buildHeaders(token),
       signal: AbortSignal.timeout(15000),
@@ -518,7 +525,7 @@ async function scanEmail(vector) {
 
   try {
     const token = await getAuthToken();
-    const resp = await fetch(`${DEFAULT_BACKEND}/analyze`, {
+    const resp = await fetch(`${currentBackendUrl}/analyze`, {
       method: 'POST', body: fd,
       headers: _buildHeaders(token),
       signal: AbortSignal.timeout(15000),
@@ -551,7 +558,7 @@ async function scanInjection(text, url, isAiInterface) {
   const extra = {};
   if (isAiInterface) extra['X-Escalation-Mode'] = 'true';
   try {
-    const resp = await fetch(`${DEFAULT_BACKEND}/analyze`, {
+    const resp = await fetch(`${currentBackendUrl}/analyze`, {
       method: 'POST', body: fd,
       headers: _buildHeaders(token, extra),
       signal: AbortSignal.timeout(10000),
@@ -562,10 +569,10 @@ async function scanInjection(text, url, isAiInterface) {
       const fd2 = new FormData();
       fd2.append('threat_type', 'prompt_injection');
       fd2.append('content', text.substring(0, 2000));
-      const resp2 = await fetch(`${DEFAULT_BACKEND}/analyze`, {
+      const resp2 = await fetch(`${currentBackendUrl}/analyze`, {
         method: 'POST', body: fd2,
-        headers: _buildHeaders(null, extra),
-        signal: AbortSignal.timeout(10000),
+        headers: _buildHeaders(null),
+        signal: AbortSignal.timeout(15000),
       });
       if (!resp2.ok) return { verdict: 'ERROR', confidence: 0, shap_features: [], explanation: 'Injection scan failed.' };
       const d2 = await resp2.json();
@@ -692,6 +699,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (tabId) {
       chrome.tabs.update(tabId, { url: msg.url });
     }
+    return true;
+  }
+
+  if (msg.type === 'SET_SETTINGS') {
+    currentBackendUrl = msg.backendUrl || DEFAULT_BACKEND;
+    chrome.storage.local.set({ siq_backend_url: currentBackendUrl });
+    sendResponse({ success: true });
     return true;
   }
 
