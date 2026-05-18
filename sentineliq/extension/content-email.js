@@ -4,24 +4,31 @@
  */
 
 let _lastTitle = document.title;
+let _lastPathname = location.pathname;
 let _bannerInjected = false;
 let _scanInProgress = false;
 let _navDebounce = null;
 
 const _isOutlook = location.hostname.includes('outlook');
 
-// Observe SPA navigation
+// Observe SPA navigation (hash for Gmail, pathname/title for Outlook)
+window.addEventListener('hashchange', _onEmailNavigation);
+
 const _navObserver = new MutationObserver(() => {
+  let changed = false;
+  if (location.pathname !== _lastPathname) {
+    _lastPathname = location.pathname;
+    changed = true;
+  }
   if (document.title !== _lastTitle) {
     _lastTitle = document.title;
-    _onEmailNavigation();
+    changed = true;
   }
+  if (changed) _onEmailNavigation();
 });
 
 const titleEl = document.querySelector('title');
-if (titleEl) {
-  _navObserver.observe(titleEl, { childList: true });
-}
+if (titleEl) _navObserver.observe(titleEl, { childList: true });
 _navObserver.observe(document.body, { childList: true, subtree: false });
 
 function _onEmailNavigation() {
@@ -31,10 +38,7 @@ function _onEmailNavigation() {
     _scanInProgress = false;
     document.getElementById('siq-email-banner')?.remove();
     
-    // Outlook DOM can be slow to render the reading pane. Retry a few times.
-    setTimeout(_triggerEmailScan, 800);
-    setTimeout(_triggerEmailScan, 2000);
-    setTimeout(_triggerEmailScan, 4000);
+    _triggerEmailScanWithRetry();
   }, 300);
 }
 
@@ -49,14 +53,12 @@ function _safeQueryAll(selector, context = document) {
 
 function _getExpandedEmailBody() {
   if (_isOutlook) {
-    return _safeQuery('div[aria-label="Message body"]') 
-        || _safeQuery('.rps_Body')
-        || _safeQuery('.BodyFragment')
-        || _safeQuery('div[aria-label="Reading Pane"] div[role="document"]')
-        || _safeQuery('div[aria-label="Reading Pane"]')
-        || _safeQuery('.JWNdg') // common Outlook reading pane class
-        || _safeQuery('div.x_WordSection1')
-        || _safeQuery('div[role="document"]'); // Fallback to any document region
+    return _safeQuery('.rps_Body') ||
+           _safeQuery('[data-testid="message-body"]') ||
+           _safeQuery('[aria-label="Message body"]') ||
+           _safeQuery('[data-app-section="ReadingPane"] .rps_Body') ||
+           _safeQuery('[data-app-section="ReadingPane"] [role="main"]') ||
+           _safeQuery('[data-app-section="ReadingPane"]'); // Last resort scoped to reading pane
   }
 
   const wrappers = _safeQueryAll('.h7');
@@ -92,18 +94,24 @@ function _extractEmailData() {
   let attachments = [];
 
   if (_isOutlook) {
-    subject = _safeQuery('[aria-label^="Subject:"]')?.innerText?.trim() || _safeQuery('.B32_a')?.innerText?.trim() || '';
+    subject = _safeQuery('[data-testid="subject"]')?.innerText?.trim() || 
+              _safeQuery('.rps_subjectLine')?.innerText?.trim() || 
+              _safeQuery('[aria-label="Message subject"]')?.innerText?.trim() || 
+              _safeQuery('h1[role="heading"]')?.innerText?.trim() || '';
     
-    const senderEl = _safeQuery('div[role="heading"] span[role="button"]') || _safeQuery('div[aria-label^="From:"]');
+    const senderEl = _safeQuery('[data-testid="senderEmail"]') || 
+                     _safeQuery('.rps_senderName') || 
+                     _safeQuery('[aria-label*="From"]');
+                     
     senderName = senderEl?.innerText?.trim() || '';
     senderEmail = senderName; // fallback
     
-    // Outlook often puts raw email in aria-label: "From: Name <email@domain.com>"
-    const fromAria = _safeQuery('div[aria-label^="From:"]')?.getAttribute('aria-label') || '';
+    // Attempt to extract raw email from aria-label
+    const fromAria = _safeQuery('[aria-label*="From"]')?.getAttribute('aria-label') || '';
     const emailMatch = fromAria.match(/<([^>]+)>/);
     if (emailMatch) {
       senderEmail = emailMatch[1].trim();
-      senderName = fromAria.replace('From:', '').replace(/<[^>]+>/, '').trim();
+      senderName = fromAria.replace(/From[:]?/, '').replace(/<[^>]+>/, '').trim();
     }
     
     const attachmentEls = _safeQueryAll('.AttachmentCard, [aria-label="Attachments"] [role="listitem"]');
@@ -163,33 +171,41 @@ function _hashEmail(str) {
 }
 
 // ── Trigger Scan ──
-async function _triggerEmailScan() {
-  if (_scanInProgress) return;
-  // Gmail uses hash fragments (#inbox) for emails; Outlook uses path-based routing (/mail/id/)
-  if (!_isOutlook && !location.href.includes('#')) return;
-  if (!_isViewingEmail()) return;
+async function _triggerEmailScanWithRetry() {
+  const delays = [500, 1000, 1500, 2000, 3000];
+  
+  for (const delay of delays) {
+    await new Promise(r => setTimeout(r, delay));
+    
+    if (_scanInProgress) return; // Prevent duplicate scanning
+    
+    if (!_isOutlook && !location.href.includes('#')) continue;
+    if (!_isViewingEmail()) continue;
 
-  const data = _extractEmailData();
-  if (!data) return;
+    const data = _extractEmailData();
+    // Require substantial body text to prevent partial/early renders from triggering false positives
+    if (data && data.bodyText && data.bodyText.trim().length > 50) {
+      const emailHash = _hashEmail(data.subject + data.senderEmail);
+      const { siq_dismissed_banners = {} } = await chrome.storage.session.get('siq_dismissed_banners');
+      if (siq_dismissed_banners[emailHash]) return; // Stop retrying if already dismissed
 
-  const emailHash = _hashEmail(data.subject + data.senderEmail);
-  const { siq_dismissed_banners = {} } = await chrome.storage.session.get('siq_dismissed_banners');
-  if (siq_dismissed_banners[emailHash]) return;
+      _scanInProgress = true;
+      _injectScanningIndicator();
 
-  _scanInProgress = true;
-  _injectScanningIndicator();
-
-  chrome.runtime.sendMessage({
-    type:        'SCAN_EMAIL_FULL',
-    bodyText:    data.bodyText,
-    subject:     data.subject,
-    senderName:  data.senderName,
-    senderEmail: data.senderEmail,
-    replyTo:     data.replyTo,
-    attachments: data.attachments,
-    links:       data.links,
-    url:         data.url,
-  });
+      chrome.runtime.sendMessage({
+        type:        'SCAN_EMAIL_FULL',
+        bodyText:    data.bodyText,
+        subject:     data.subject,
+        senderName:  data.senderName,
+        senderEmail: data.senderEmail,
+        replyTo:     data.replyTo,
+        attachments: data.attachments,
+        links:       data.links,
+        url:         data.url,
+      });
+      return; // Found and dispatched, stop the retry loop
+    }
+  }
 }
 
 function _injectScanningIndicator() {
@@ -378,7 +394,5 @@ function _highlightDangerousLinks(linkVerdictMapEntries) {
   });
 }
 
-// Initial trigger - Outlook can be very slow to boot
-setTimeout(_triggerEmailScan, 1500);
-setTimeout(_triggerEmailScan, 3000);
-setTimeout(_triggerEmailScan, 5000);
+// Initial trigger - Use the retry poller
+_triggerEmailScanWithRetry();
