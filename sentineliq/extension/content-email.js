@@ -30,7 +30,11 @@ function _onEmailNavigation() {
     _bannerInjected = false;
     _scanInProgress = false;
     document.getElementById('siq-email-banner')?.remove();
+    
+    // Outlook DOM can be slow to render the reading pane. Retry a few times.
     setTimeout(_triggerEmailScan, 800);
+    setTimeout(_triggerEmailScan, 2000);
+    setTimeout(_triggerEmailScan, 4000);
   }, 300);
 }
 
@@ -45,7 +49,14 @@ function _safeQueryAll(selector, context = document) {
 
 function _getExpandedEmailBody() {
   if (_isOutlook) {
-    return _safeQuery('div[aria-label="Message body"]') || _safeQuery('.rps_Body');
+    return _safeQuery('div[aria-label="Message body"]') 
+        || _safeQuery('.rps_Body')
+        || _safeQuery('.BodyFragment')
+        || _safeQuery('div[aria-label="Reading Pane"] div[role="document"]')
+        || _safeQuery('div[aria-label="Reading Pane"]')
+        || _safeQuery('.JWNdg') // common Outlook reading pane class
+        || _safeQuery('div.x_WordSection1')
+        || _safeQuery('div[role="document"]'); // Fallback to any document region
   }
 
   const wrappers = _safeQueryAll('.h7');
@@ -367,5 +378,7 @@ function _highlightDangerousLinks(linkVerdictMapEntries) {
   });
 }
 
-// Initial trigger
-setTimeout(_triggerEmailScan, 1200);
+// Initial trigger - Outlook can be very slow to boot
+setTimeout(_triggerEmailScan, 1500);
+setTimeout(_triggerEmailScan, 3000);
+setTimeout(_triggerEmailScan, 5000);
