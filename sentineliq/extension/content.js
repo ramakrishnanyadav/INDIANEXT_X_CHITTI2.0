@@ -247,12 +247,12 @@ function showPageBanner(result) {
   // MALICIOUS: redirect to full blocked page (pre-click interception may not have fired)
   if (v === 'MALICIOUS' && score >= 65) {
     const params = new URLSearchParams({
-      url:         encodeURIComponent(location.href),
+      url:         location.href,
       verdict:     v,
       risk:        String(score),
-      explanation: encodeURIComponent(result.explanation || 'Malicious page detected.'),
-      action:      encodeURIComponent(result.action || 'Close this tab immediately.'),
-      signals:     encodeURIComponent(JSON.stringify((result.shap_features || []).slice(0, 4).map(f => f.feature))),
+      explanation: result.explanation || 'Malicious page detected.',
+      action:      result.action || 'Close this tab immediately.',
+      signals:     JSON.stringify((result.shap_features || []).slice(0, 4).map(f => f.feature)),
     });
     window.location.replace(chrome.runtime.getURL('blocked.html') + '?' + params.toString());
     return;

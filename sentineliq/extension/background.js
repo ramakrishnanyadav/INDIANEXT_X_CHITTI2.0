@@ -949,16 +949,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'SCAN_CONTENT') {
-    // Fix #3: Direct content scan from password form detection — always escalates
-    if (tabId) setBadge(tabId, 'SCANNING');
-    scanContent(msg.content).then(result => {
-      if (!result) { sendResponse({ result: BENIGN_FAST('No content signals.') }); return; }
-      const url = msg.url || 'content-scan';
-      // Cache under the page URL so popup reads this result
-      setCache(url, result);
-      if (tabId) { recordScan(url, result); setBadge(tabId, result.verdict); }
-      safeSendMessage({ type: 'PAGE_RESULT', result, url });
-      sendResponse({ result });
+    // Check whitelist first so password forms don't re-trigger blocks on approved pages
+    const url = msg.url || 'content-scan';
+    _whitelistRestorePromise.then(() => {
+      if (_whitelistHasSync(url)) {
+        if (tabId) setBadge(tabId, 'BENIGN');
+        const r = BENIGN_FAST('User-approved bypass — ignoring password form.');
+        sendResponse({ result: r });
+        return;
+      }
+      
+      if (tabId) setBadge(tabId, 'SCANNING');
+      scanContent(msg.content).then(result => {
+        if (!result) { sendResponse({ result: BENIGN_FAST('No content signals.') }); return; }
+        setCache(url, result);
+        if (tabId) { recordScan(url, result); setBadge(tabId, result.verdict); }
+        safeSendMessage({ type: 'PAGE_RESULT', result, url });
+        sendResponse({ result });
+      });
     });
     return true;
   }
