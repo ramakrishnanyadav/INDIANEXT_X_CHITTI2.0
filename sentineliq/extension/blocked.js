@@ -1,13 +1,13 @@
 (function () {
   // ── Parse URL params ────────────────────────────────────────────────────────
   const params      = new URLSearchParams(location.search);
-  const destUrl     = decodeURIComponent(params.get('url') || '');
+  const destUrl     = params.get('url') || '';           // URLSearchParams.get() already decodes
   const risk        = parseInt(params.get('risk') || '0', 10);
-  const explanation = decodeURIComponent(params.get('explanation') || 'This destination has been classified as malicious by SentinelIQ threat engines.');
-  const action      = decodeURIComponent(params.get('action') || 'Do not proceed. Return to a safe page and report this URL to your IT team.');
+  const explanation = params.get('explanation') || 'This destination has been classified as malicious by SentinelIQ threat engines.';
+  const action      = params.get('action')      || 'Do not proceed. Return to a safe page and report this URL to your IT team.';
 
   let signals = [];
-  try { signals = JSON.parse(decodeURIComponent(params.get('signals') || '[]')); } catch {}
+  try { signals = JSON.parse(params.get('signals') || '[]'); } catch {}
 
   // ── Populate static content ─────────────────────────────────────────────────
   document.getElementById('risk-num').textContent    = risk;

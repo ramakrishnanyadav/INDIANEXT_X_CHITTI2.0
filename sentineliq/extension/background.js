@@ -922,14 +922,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               // during the scan window (e.g. user double-clicks Proceed).
               if (!_whitelistHasSync(msg.url)) {
                 const params = new URLSearchParams({
-                  url:         encodeURIComponent(msg.url),
+                  url:         msg.url,
                   verdict:     finalResult.verdict,
                   risk:        String(finalResult.risk_score || 0),
-                  explanation: encodeURIComponent(finalResult.explanation || 'Malicious content detected.'),
-                  action:      encodeURIComponent(finalResult.action     || 'Do not proceed to this site.'),
-                  signals:     encodeURIComponent(JSON.stringify(
+                  explanation: finalResult.explanation || 'Malicious content detected.',
+                  action:      finalResult.action     || 'Do not proceed to this site.',
+                  signals:     JSON.stringify(
                     (finalResult.shap_features || []).slice(0, 3).map(f => f.feature)
-                  )),
+                  ),
                 });
                 chrome.tabs.update(tabId, { url: `${BLOCKED_PAGE}?${params.toString()}` });
               }
@@ -1184,14 +1184,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       !_whitelistHasSync(ctx.url)
     ) {
       const params = new URLSearchParams({
-        url:         encodeURIComponent(ctx.url),
+        url:         ctx.url,
         verdict:     result.verdict,
         risk:        String(result.risk_score || 0),
-        explanation: encodeURIComponent(result.explanation || 'Malicious URL detected.'),
-        action:      encodeURIComponent(result.action     || 'Do not proceed to this site.'),
-        signals:     encodeURIComponent(JSON.stringify(
+        explanation: result.explanation || 'Malicious URL detected.',
+        action:      result.action     || 'Do not proceed to this site.',
+        signals:     JSON.stringify(
           (result.shap_features || []).slice(0, 3).map(f => f.feature)
-        )),
+        ),
       });
       chrome.tabs.update(tabId, { url: `${BLOCKED_PAGE}?${params.toString()}` });
     }
@@ -1262,14 +1262,14 @@ if (typeof chrome.webNavigation !== 'undefined') {
       setBadge(tabId, 'MALICIOUS');
 
       const params = new URLSearchParams({
-        url:         encodeURIComponent(url),
+        url:         url,
         verdict:     cached.verdict,
         risk:        String(cached.risk_score || 0),
-        explanation: encodeURIComponent(cached.explanation || 'Malicious URL detected.'),
-        action:      encodeURIComponent(cached.action || 'Do not proceed to this site.'),
-        signals:     encodeURIComponent(JSON.stringify(
+        explanation: cached.explanation || 'Malicious URL detected.',
+        action:      cached.action || 'Do not proceed to this site.',
+        signals:     JSON.stringify(
           (cached.shap_features || []).slice(0, 3).map(f => f.feature)
-        )),
+        ),
       });
       chrome.tabs.update(tabId, { url: `${BLOCKED_PAGE}?${params.toString()}` });
     }
