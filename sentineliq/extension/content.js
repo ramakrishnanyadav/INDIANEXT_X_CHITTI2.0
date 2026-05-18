@@ -39,11 +39,21 @@ function isLocalUrl(url) {
 function scanUrl(url) {
   return new Promise(resolve => {
     if (scanned.has(url)) { resolve(scanned.get(url)); return; }
-    chrome.runtime.sendMessage({ type: 'SCAN_URL', url }, resp => {
-      const r = resp?.result || { verdict: 'ERROR', shap_features: [], explanation: 'Scan failed.', action: '', risk_score: 0 };
-      scanned.set(url, r);
-      resolve(r);
-    });
+    try {
+      chrome.runtime.sendMessage({ type: 'SCAN_URL', url }, resp => {
+        if (chrome.runtime.lastError) {
+          console.warn('[SentinelIQ] Extension context invalidated (reload page).', chrome.runtime.lastError.message);
+          resolve({ verdict: 'ERROR', shap_features: [], explanation: 'Extension reloaded. Please refresh the page.', risk_score: 0 });
+          return;
+        }
+        const r = resp?.result || { verdict: 'ERROR', shap_features: [], explanation: 'Scan failed.', action: '', risk_score: 0 };
+        scanned.set(url, r);
+        resolve(r);
+      });
+    } catch (err) {
+      console.warn('[SentinelIQ] Cannot send message, context invalidated. Please refresh the page.', err);
+      resolve({ verdict: 'ERROR', shap_features: [], explanation: 'Extension reloaded. Please refresh the page.', risk_score: 0 });
+    }
   });
 }
 
