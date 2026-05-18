@@ -5,6 +5,14 @@
 
 'use strict';
 
+// ── Self-page guard ───────────────────────────────────────────────────────────
+// Never scan the extension's own pages (blocked.html, popup, etc.).
+// If we do, the popup shows PENDING and background may re-trigger a block loop.
+if (location.href.startsWith('chrome-extension://') || location.protocol === 'chrome-extension:') {
+  // Halt content script execution for all extension pages
+  throw new Error('[SentinelIQ] Skipping scan on own extension page.');
+}
+
 const DEBOUNCE_MS = 250;
 let scanned = new Map();   // url → result (in-tab cache)
 let activeTooltip = null;

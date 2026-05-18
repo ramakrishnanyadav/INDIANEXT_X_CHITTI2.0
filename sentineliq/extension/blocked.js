@@ -10,7 +10,7 @@
   try { signals = JSON.parse(decodeURIComponent(params.get('signals') || '[]')); } catch {}
 
   // ── Populate static content ─────────────────────────────────────────────────
-  document.getElementById('risk-num').textContent   = risk;
+  document.getElementById('risk-num').textContent    = risk;
   document.getElementById('url-display').textContent = destUrl || 'Unknown destination';
   document.getElementById('url-display').title       = destUrl;
   document.getElementById('explanation').textContent  = explanation;
@@ -24,12 +24,12 @@
 
   // ── Signals ─────────────────────────────────────────────────────────────────
   const SIGNAL_ICONS = {
-    'Account Threat':       '👤',
-    'Urgency Deadline':     '⏳',
-    'Language Manipulation':'🧠',
-    'Credential Harvest':   '🔑',
-    'Brand Spoof':          '🎭',
-    'Malicious URL pattern':'🔗',
+    'Account Threat':        '👤',
+    'Urgency Deadline':      '⏳',
+    'Language Manipulation': '🧠',
+    'Credential Harvest':    '🔑',
+    'Brand Spoof':           '🎭',
+    'Malicious URL pattern': '🔗',
   };
 
   const sigContainer = document.getElementById('signals-container');
@@ -40,15 +40,16 @@
   }).join('');
 
   // ── Custom checkbox ──────────────────────────────────────────────────────────
-  let consented = false;
+  let consented      = false;
   let countdownTimer = null;
-  let countdownSec = 5;
+  let countdownSec   = 5;
+  let navigating     = false;   // guard against double clicks
 
-  const consentBox    = document.getElementById('consent-box');
-  const consentRow    = document.getElementById('consent-row');
-  const proceedBtn    = document.getElementById('proceed-btn');
-  const proceedZone   = document.getElementById('proceed-zone');
-  const countdownEl   = document.getElementById('countdown-badge');
+  const consentBox  = document.getElementById('consent-box');
+  const consentRow  = document.getElementById('consent-row');
+  const proceedBtn  = document.getElementById('proceed-btn');
+  const proceedZone = document.getElementById('proceed-zone');
+  const countdownEl = document.getElementById('countdown-badge');
 
   function toggleConsent() {
     consented = !consented;
@@ -66,7 +67,7 @@
 
   consentBox.addEventListener('click', toggleConsent);
   consentRow.addEventListener('click', (e) => {
-    if (e.target === consentBox) return; // already handled
+    if (e.target === consentBox) return;
     toggleConsent();
   });
 
@@ -97,56 +98,61 @@
     countdownEl.textContent = 'GO';
   }
 
-  // ── Proceed button ───────────────────────────────────────────────────────────
-  proceedBtn.addEventListener('click', () => {
-    if (proceedBtn.disabled || !consented) return;
+  // ── Core navigation ──────────────────────────────────────────────────────────
+  // We use chrome.tabs.getCurrent() to get OUR OWN tab ID directly.
+  // This is more reliable than relying on the background worker's sender.tab,
+  // which is undefined for extension pages.
+  function doNavigateNow() {
+    if (!destUrl) return;
 
-    // Show overlay immediately so user gets instant feedback
-    const overlay = document.getElementById('redirect-overlay');
-    const msg     = document.getElementById('redirect-msg');
-    overlay.classList.add('visible');
-    msg.textContent = 'Bypassing protection…';
+    // Whitelist first (fire-and-forget — don't await)
+    try {
+      chrome.runtime.sendMessage({ type: 'WHITELIST_URL', url: destUrl });
+    } catch (_) {}
 
-    // Fire the whitelist message — don't wait for response
-    if (destUrl && typeof chrome !== 'undefined' && chrome.runtime) {
-      chrome.runtime.sendMessage({ type: 'WHITELIST_URL', url: destUrl }).catch(() => {});
-    }
-
-    // Navigate immediately on the next frame
-    requestAnimationFrame(() => {
-      msg.textContent = 'Navigating to destination…';
-
-      if (!destUrl) {
-        overlay.classList.remove('visible');
-        return;
-      }
-
-      if (destUrl.toLowerCase().startsWith('file://')) {
-        // Chrome blocks chrome-extension:// → file:// navigation; go back in history
-        history.back();
+    // Get our own tab ID and navigate directly
+    chrome.tabs.getCurrent(function (tab) {
+      if (tab && tab.id) {
+        chrome.tabs.update(tab.id, { url: destUrl });
       } else {
-        // For web URLs use background worker which has full tab privileges
-        if (typeof chrome !== 'undefined' && chrome.runtime) {
-          chrome.runtime.sendMessage({ type: 'FORCE_NAVIGATE', url: destUrl });
-        } else {
+        // Fallback for http/https if tab lookup fails
+        if (!destUrl.startsWith('file://')) {
           window.location.href = destUrl;
         }
       }
     });
+  }
+
+  // ── Proceed button ───────────────────────────────────────────────────────────
+  proceedBtn.addEventListener('click', () => {
+    if (proceedBtn.disabled || !consented || navigating) return;
+    navigating = true;
+
+    const overlay = document.getElementById('redirect-overlay');
+    const msg     = document.getElementById('redirect-msg');
+    overlay.classList.add('visible');
+    msg.textContent = 'Navigating to destination…';
+
+    doNavigateNow();
+
+    // Safety valve: if chrome.tabs.update triggered a tab URL change,
+    // this page will unload. If it hasn't after 4s, hide the overlay.
+    setTimeout(() => {
+      navigating = false;
+      overlay.classList.remove('visible');
+    }, 4000);
   });
 
   // ── Return to Safety ─────────────────────────────────────────────────────────
   document.getElementById('safe-btn').addEventListener('click', () => {
-    // If there's a previous page that isn't the malicious site, go back
-    // Otherwise, fall back to Google
-    try {
-      if (history.length > 1) {
-        history.back();
+    // Navigate the current tab to Google instead of using history.back()
+    // (history.back() would return to the malicious page and trigger the loop again)
+    chrome.tabs.getCurrent(function (tab) {
+      if (tab && tab.id) {
+        chrome.tabs.update(tab.id, { url: 'https://www.google.com' });
       } else {
         window.location.replace('https://www.google.com');
       }
-    } catch {
-      window.location.replace('https://www.google.com');
-    }
+    });
   });
 })();
