@@ -96,12 +96,12 @@ document.addEventListener('click', e => {
     e.stopImmediatePropagation();
     // Redirect to blocked page with threat context
     const params = new URLSearchParams({
-      url:         encodeURIComponent(url),
+      url:         url,
       verdict:     cached.verdict,
       risk:        String(cached.risk_score || 0),
-      explanation: encodeURIComponent(cached.explanation || 'Malicious URL detected.'),
-      action:      encodeURIComponent(cached.action || 'Do not proceed.'),
-      signals:     encodeURIComponent(JSON.stringify((cached.shap_features || []).slice(0, 3).map(f => f.feature))),
+      explanation: cached.explanation || 'Malicious URL detected.',
+      action:      cached.action || 'Do not proceed.',
+      signals:     JSON.stringify((cached.shap_features || []).slice(0, 3).map(f => f.feature)),
     });
     window.location.href = chrome.runtime.getURL('blocked.html') + '?' + params.toString();
   }
