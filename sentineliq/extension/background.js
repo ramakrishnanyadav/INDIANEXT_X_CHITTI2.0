@@ -702,6 +702,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === 'WHITELIST_URL') {
+    _whitelistAdd(msg.url).then(() => sendResponse({ success: true }));
+    return true;
+  }
+
   if (msg.type === 'SET_SETTINGS') {
     currentBackendUrl = msg.backendUrl || DEFAULT_BACKEND;
     chrome.storage.local.set({ siq_backend_url: currentBackendUrl });
