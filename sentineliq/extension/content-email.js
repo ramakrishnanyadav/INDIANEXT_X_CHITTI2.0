@@ -154,7 +154,8 @@ function _hashEmail(str) {
 // ── Trigger Scan ──
 async function _triggerEmailScan() {
   if (_scanInProgress) return;
-  if (!location.href.includes('#')) return;
+  // Gmail uses hash fragments (#inbox) for emails; Outlook uses path-based routing (/mail/id/)
+  if (!_isOutlook && !location.href.includes('#')) return;
   if (!_isViewingEmail()) return;
 
   const data = _extractEmailData();
