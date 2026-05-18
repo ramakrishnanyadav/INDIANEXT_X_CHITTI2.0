@@ -140,23 +140,55 @@ function analyzeSender(displayName, fromEmail, replyToEmail) {
 // active navigation. On worker restart the navigation has already completed.
 const _intercepted = new Set();
 
-// _whitelist must persist across restarts. chrome.storage.session survives tab
-// lifetime but not browser restart — exactly the right scope for a 1-hour bypass.
+// ── In-memory approved URL set ────────────────────────────────────────────────
+// This is the KEY to avoiding the block loop:
+// _approvedUrls is populated SYNCHRONOUSLY when WHITELIST_AND_NAVIGATE fires.
+// By the time content.js sends SCAN_PAGE on the new page, _whitelistHasSync()
+// already returns true, so the block redirect is never triggered.
+const _approvedUrls = new Set();
+
+function _normalizeUrl(url) {
+  try { return decodeURIComponent(url.split('#')[0].split('?')[0]).toLowerCase().replace(/\/+$/, ''); }
+  catch { return url.toLowerCase(); }
+}
+
+// Synchronous check — no await, no race condition.
+function _whitelistHasSync(url) {
+  const base = _normalizeUrl(url);
+  for (const approved of _approvedUrls) {
+    if (base.startsWith(approved) || approved.startsWith(base)) return true;
+  }
+  return false;
+}
+
+// Async check for startup restore — reads from storage on service worker wake.
 async function _whitelistHas(url) {
+  if (_whitelistHasSync(url)) return true; // fast path: in-memory hit
   const d = await chrome.storage.local.get('siq_whitelist');
   const list = d.siq_whitelist || [];
-  const now = Date.now();
-  // Strip fragment and query string for robust whitelist matching, and decode to handle %3A vs :
-  const base = decodeURIComponent(url.split('#')[0].split('?')[0]).toLowerCase();
-  return list.some(e => base.startsWith(decodeURIComponent(e.url.split('#')[0].split('?')[0]).toLowerCase()) && now < e.expiry);
+  const now  = Date.now();
+  const base = _normalizeUrl(url);
+  const hit  = list.some(e => base.startsWith(_normalizeUrl(e.url)) && now < e.expiry);
+  if (hit) _approvedUrls.add(base); // re-populate in-memory on restore
+  return hit;
 }
 
 async function _whitelistAdd(url) {
-  const d = await chrome.storage.local.get('siq_whitelist');
-  let list = (d.siq_whitelist || []).filter(e => Date.now() < e.expiry); // prune expired
-  list.push({ url: decodeURIComponent(url).toLowerCase(), expiry: Date.now() + 60 * 60 * 1000 });
-  await chrome.storage.local.set({ siq_whitelist: list });
+  const normalized = _normalizeUrl(url);
+  _approvedUrls.add(normalized); // INSTANT in-memory — this is synchronous
+  // Persist to storage in the background (don't await before navigating)
+  chrome.storage.local.get('siq_whitelist').then(d => {
+    let list = (d.siq_whitelist || []).filter(e => Date.now() < e.expiry);
+    list.push({ url: normalized, expiry: Date.now() + 60 * 60 * 1000 });
+    return chrome.storage.local.set({ siq_whitelist: list });
+  });
 }
+
+// Restore approved URLs into memory on service worker startup
+chrome.storage.local.get('siq_whitelist').then(d => {
+  const now = Date.now();
+  (d.siq_whitelist || []).filter(e => now < e.expiry).forEach(e => _approvedUrls.add(_normalizeUrl(e.url)));
+});
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -707,6 +739,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // ── WHITELIST_AND_NAVIGATE: the guaranteed loop-free bypass ──────────────────
+  // 1. Whitelist added to in-memory Set SYNCHRONOUSLY (before any navigation).
+  // 2. Storage write fires in background (non-blocking).
+  // 3. Tab navigates AFTER in-memory set is populated.
+  // Result: when content.js fires SCAN_PAGE on the new page, _whitelistHasSync()
+  //         already returns true → redirect is short-circuited → no loop.
+  if (msg.type === 'WHITELIST_AND_NAVIGATE') {
+    _whitelistAdd(msg.url); // synchronously adds to _approvedUrls
+    const targetTabId = msg.tabId || tabId;
+    if (targetTabId && msg.url) {
+      chrome.tabs.update(targetTabId, { url: msg.url });
+    }
+    sendResponse({ success: true });
+    return true;
+  }
+
   if (msg.type === 'SET_SETTINGS') {
     currentBackendUrl = msg.backendUrl || DEFAULT_BACKEND;
     chrome.storage.local.set({ siq_backend_url: currentBackendUrl });
@@ -715,6 +763,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'SCAN_PAGE') {
+    // ── Sync whitelist gate — checked BEFORE any async scan starts ─────────────
+    // This is the race-condition fix. _whitelistHasSync uses the in-memory Set
+    // which is populated synchronously by WHITELIST_AND_NAVIGATE before navigation.
+    if (_whitelistHasSync(msg.url)) {
+      if (tabId) setBadge(tabId, 'BENIGN');
+      const bypassResult = BENIGN_FAST('User approved — bypass active for 1 hour.');
+      sendResponse({ result: bypassResult });
+      chrome.runtime.sendMessage({ type: 'PAGE_RESULT', result: bypassResult, url: msg.url }).catch(() => {});
+      return true;
+    }
+
     // Fix #4: Badge turns SCANNING immediately, then only updates AFTER full merge is done.
     if (tabId) setBadge(tabId, 'SCANNING');
 
