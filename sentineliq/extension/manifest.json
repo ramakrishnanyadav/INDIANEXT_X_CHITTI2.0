@@ -31,8 +31,13 @@
       "all_frames": false
     },
     {
-      "matches": ["*://mail.google.com/*"],
-      "js": ["content-gmail.js"],
+      "matches": [
+        "*://mail.google.com/*",
+        "*://outlook.live.com/*",
+        "*://outlook.office.com/*",
+        "*://outlook.cloud.microsoft/*"
+      ],
+      "js": ["content-email.js"],
       "run_at": "document_idle",
       "all_frames": false
     }
@@ -52,7 +57,10 @@
     "https://*/*",
     "http://*/*",
     "https://securetoken.googleapis.com/*",
-    "*://mail.google.com/*"
+    "*://mail.google.com/*",
+    "*://outlook.live.com/*",
+    "*://outlook.office.com/*",
+    "*://outlook.cloud.microsoft/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"

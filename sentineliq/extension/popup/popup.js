@@ -149,7 +149,9 @@ async function scanActiveTab() {
     return;
   }
 
-  if (tab.url.includes('mail.google.com')) {
+  const isEmailClient = tab.url.includes('mail.google.com') || tab.url.includes('outlook.live.com') || tab.url.includes('outlook.office.com') || tab.url.includes('outlook.cloud.microsoft');
+  
+  if (isEmailClient) {
     const key = `c_email_tab_${tab.id}`;
     const res = await chrome.storage.local.get(key);
     if (res[key]) {
