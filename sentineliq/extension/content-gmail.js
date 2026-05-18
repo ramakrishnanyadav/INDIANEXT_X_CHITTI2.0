@@ -160,12 +160,14 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 function _handleScanResult(msg) {
-  if (msg.verdict === 'MALICIOUS' || msg.verdict === 'SUSPICIOUS') {
+  if (msg.verdict === 'MALICIOUS' || msg.verdict === 'SUSPICIOUS' || msg.verdict === 'BENIGN') {
     if (!_bannerInjected) {
       _injectWarningBanner(msg);
       _bannerInjected = true;
     }
-    _highlightDangerousLinks(msg.linkVerdictMap);
+    if (msg.verdict !== 'BENIGN') {
+      _highlightDangerousLinks(msg.linkVerdictMap);
+    }
   }
 }
 
@@ -175,13 +177,17 @@ function _injectWarningBanner(msg) {
   if (!bodyEl) return;
 
   const isMalicious = msg.verdict === 'MALICIOUS';
-  const color       = isMalicious ? '#ef4444' : '#f59e0b';
-  const bgColor     = isMalicious ? '#fef2f2' : '#fffbeb';
-  const borderColor = isMalicious ? '#fca5a5' : '#fde68a';
-  const icon        = isMalicious ? '🚨' : '⚠️';
+  const isSuspicious = msg.verdict === 'SUSPICIOUS';
+  
+  const color       = isMalicious ? '#ef4444' : isSuspicious ? '#f59e0b' : '#10b981';
+  const bgColor     = isMalicious ? '#fef2f2' : isSuspicious ? '#fffbeb' : '#ecfdf5';
+  const borderColor = isMalicious ? '#fca5a5' : isSuspicious ? '#fde68a' : '#6ee7b7';
+  const icon        = isMalicious ? '🚨' : isSuspicious ? '⚠️' : '✅';
   const title       = isMalicious
     ? 'SentinelIQ: Malicious Email Detected'
-    : 'SentinelIQ: Suspicious Email Detected';
+    : isSuspicious
+    ? 'SentinelIQ: Suspicious Email Detected'
+    : 'SentinelIQ: Legit Email (Safe to open links)';
 
   const signals = (msg.shap_features || [])
     .slice(0, 4)
