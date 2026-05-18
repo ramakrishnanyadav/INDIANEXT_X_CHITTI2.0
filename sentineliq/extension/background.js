@@ -881,19 +881,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             ? scanContent(msg.content, msg.semanticDivergence)
             : Promise.resolve(null),
         ]).then(async ([urlResult, contentResult]) => {
-          // If the URL scan itself errored (backend down), do NOT block.
-          // Blocking on an ERROR verdict would lock users out of sites whenever
-          // the Render free tier is cold-starting. Show ERROR badge instead.
+          // If the URL scan errored (backend cold-starting), do NOT block.
+          // Schedule an auto-retry in 15 s — enough for Render to wake up.
+          // The alarm name encodes the tabId so multiple tabs don't collide.
           if (urlResult.verdict === 'ERROR') {
             if (tabId) setBadge(tabId, 'ERROR');
             const r = {
               ...urlResult,
-              explanation: 'Backend offline or cold-starting — scan deferred. Reload to retry.',
+              explanation: urlResult.explanation ||
+                'Backend is warming up. Auto-retry in 15 seconds.',
             };
             sendResponse({ result: r });
             safeSendMessage({ type: 'PAGE_RESULT', result: r, url: msg.url });
+
+            // Auto-retry: store context and fire alarm after 15 s
+            if (tabId && msg.url) {
+              const alarmName = `retry_scan_${tabId}`;
+              chrome.storage.local.set({
+                [`retry_${tabId}`]: { url: msg.url, tabId },
+              });
+              chrome.alarms.create(alarmName, { delayInMinutes: 0.25 }); // ~15 s
+            }
             return; // Do NOT call setCache — don't poison cache with ERROR
           }
+
 
           const finalResult = mergeResults(urlResult, contentResult, hasPasswordForm);
           setCache(msg.url, finalResult);
@@ -1119,9 +1130,65 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  // ── Cold-start auto-retry ─────────────────────────────────────────────────
+  // Fires ~15 s after a SCAN_PAGE got an ERROR (backend was sleeping).
+  // Re-runs scanUrl. If the backend is now warm, updates the badge and cache.
+  // If still cold, silently gives up (no infinite retry loop).
+  if (alarm.name.startsWith('retry_scan_')) {
+    const tabId = parseInt(alarm.name.replace('retry_scan_', ''), 10);
+    const key   = `retry_${tabId}`;
+    const store = await chrome.storage.local.get(key);
+    const ctx   = store[key];
+    await chrome.storage.local.remove(key); // clean up regardless
+
+    if (!ctx?.url || !tabId) return;
+
+    // Verify the tab still exists and is on the same URL
+    let tab;
+    try { tab = await chrome.tabs.get(tabId); } catch { return; }
+    if (!tab || _normalizeUrl(tab.url) !== _normalizeUrl(ctx.url)) return;
+
+    setBadge(tabId, 'SCANNING');
+    const result = await scanUrl(ctx.url);
+
+    if (result.verdict === 'ERROR') {
+      // Backend still cold — just show ERROR badge, don't retry again
+      setBadge(tabId, 'ERROR');
+      return;
+    }
+
+    // Backend is warm now — update badge, cache, notify popup
+    setCache(ctx.url, result);
+    recordScan(ctx.url, result);
+    setBadge(tabId, result.verdict);
+    safeSendMessage({ type: 'PAGE_RESULT', result, url: ctx.url });
+
+    // If result is now MALICIOUS and URL is not whitelisted — block
+    if (
+      result.verdict === 'MALICIOUS' &&
+      (result.risk_score || 0) >= 70 &&
+      !isLocal(ctx.url) &&
+      !_whitelistHasSync(ctx.url)
+    ) {
+      const params = new URLSearchParams({
+        url:         encodeURIComponent(ctx.url),
+        verdict:     result.verdict,
+        risk:        String(result.risk_score || 0),
+        explanation: encodeURIComponent(result.explanation || 'Malicious URL detected.'),
+        action:      encodeURIComponent(result.action     || 'Do not proceed to this site.'),
+        signals:     encodeURIComponent(JSON.stringify(
+          (result.shap_features || []).slice(0, 3).map(f => f.feature)
+        )),
+      });
+      chrome.tabs.update(tabId, { url: `${BLOCKED_PAGE}?${params.toString()}` });
+    }
+    return;
+  }
+
+  // ── Anomaly heartbeat ─────────────────────────────────────────────────────
   if (alarm.name !== 'anomaly_heartbeat') return;
   const { siq_auth } = await chrome.storage.local.get('siq_auth');
-  if (!siq_auth) return; // Heartbeat only fires when logged in (A12)
+  if (!siq_auth) return;
   const vector = await buildPartialVector('heartbeat');
   const result = await scanAnomaly(vector, 'background://heartbeat', 'heartbeat');
   if (!result) return;
