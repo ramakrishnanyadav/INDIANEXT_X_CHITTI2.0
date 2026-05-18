@@ -44,7 +44,7 @@ const BENCHMARKS = [
 ];
 
 const TAB_HEADERS: Record<string, { title: string; sub: string }> = {
-  'Dashboard':       { title: 'Command Center',     sub: 'Real-time threat overview · Live Firestore sync' },
+  'Live Scanner':    { title: 'Command Center',     sub: 'Real-time threat overview · Live Firestore sync' },
   'Scan Tools':      { title: 'Scan Tools',          sub: 'URL · Email · File analysis · Manual investigation' },
   'Threat Analysis': { title: 'Threat Intelligence', sub: 'Multi-engine analytics · Behavioral trends · Peak hours' },
   'Incidents':       { title: 'Incident Repository', sub: 'Chronological log · Severity filter · Deep analysis' },
@@ -52,7 +52,7 @@ const TAB_HEADERS: Record<string, { title: string; sub: string }> = {
 };
 
 const Dashboard: React.FC = () => {
-  const [activeTab, setActiveTab] = useState('Dashboard');
+  const [activeTab, setActiveTab] = useState('Live Scanner');
   const [threats, setThreats] = useState<Threat[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const { uid, displayName, email, photoURL } = useAuth();
@@ -78,7 +78,7 @@ const Dashboard: React.FC = () => {
   };
 
   const navItems = [
-    { icon: LayoutDashboard, label: 'Dashboard' },
+    { icon: Activity,        label: 'Live Scanner' },
     { icon: ShieldCheck,     label: 'Scan Tools' },
     { icon: ShieldAlert,     label: 'Threat Analysis' },
     { icon: History,         label: 'Incidents' },
@@ -91,7 +91,7 @@ const Dashboard: React.FC = () => {
       case 'Threat Analysis': return <ThreatAnalysis />;
       case 'Incidents':       return <IncidentsView />;
       case 'Settings':        return <SettingsView />;
-      case 'Dashboard':
+      case 'Live Scanner':
       default:
         return (
           <div className="flex-1 overflow-hidden grid grid-cols-12">
@@ -170,7 +170,7 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const headerInfo = TAB_HEADERS[activeTab] || TAB_HEADERS['Dashboard'];
+  const headerInfo = TAB_HEADERS[activeTab] || TAB_HEADERS['Live Scanner'];
 
   return (
     <div className="flex h-full w-full bg-black/20 backdrop-blur-3xl overflow-hidden">

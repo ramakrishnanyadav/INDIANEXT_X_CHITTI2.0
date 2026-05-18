@@ -1,9 +1,15 @@
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Settings, Shield, User, Trash2, LogOut, CheckCircle2, AlertTriangle, ShieldOff } from 'lucide-react';
+import { useAuth } from '@/hooks/useAuth';
+import { signOut } from 'firebase/auth';
+import { auth } from '@/lib/firebase';
+import { useNavigate } from 'react-router-dom';
 
 const SettingsView: React.FC = () => {
   const [consentEnabled, setConsentEnabled] = useState(true);
+  const { uid, displayName, email, photoURL } = useAuth();
+  const navigate = useNavigate();
 
   return (
     <div className="p-8 space-y-8 h-full overflow-y-auto custom-scrollbar max-w-4xl">
@@ -16,25 +22,29 @@ const SettingsView: React.FC = () => {
         {/* Profile Section */}
         <section className="p-8 rounded-[32px] border border-white/10 bg-white/5 backdrop-blur-xl">
           <div className="flex items-center gap-6 mb-8">
-            <div className="h-20 w-20 rounded-3xl bg-gradient-to-br from-cyan-500 to-purple-500 p-[1px]">
-              <div className="h-full w-full rounded-[23px] bg-zinc-900 flex items-center justify-center">
-                <User className="h-10 w-10 text-zinc-500" />
+            {photoURL ? (
+              <img src={photoURL} alt="Avatar" className="h-20 w-20 rounded-3xl object-cover ring-2 ring-cyan-500/50" />
+            ) : (
+              <div className="h-20 w-20 rounded-3xl bg-gradient-to-br from-cyan-500 to-purple-500 p-[1px]">
+                <div className="h-full w-full rounded-[23px] bg-zinc-900 flex items-center justify-center">
+                  <User className="h-10 w-10 text-zinc-500" />
+                </div>
               </div>
-            </div>
+            )}
             <div>
-              <h3 className="text-xl font-black text-white uppercase tracking-tight">Security Officer Alpha</h3>
-              <p className="text-cyan-400 text-xs font-black uppercase tracking-widest">Administrator Privileges</p>
+              <h3 className="text-xl font-black text-white uppercase tracking-tight">{displayName || email?.split('@')[0] || 'User'}</h3>
+              <p className="text-cyan-400 text-xs font-black uppercase tracking-widest">{uid ? 'Authenticated User' : 'Guest Mode'}</p>
             </div>
           </div>
           
           <div className="grid grid-cols-2 gap-4">
             <div className="p-4 rounded-2xl bg-white/5 border border-white/5">
               <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block mb-2">Display Name</label>
-              <input type="text" defaultValue="Officer Alpha" className="w-full bg-transparent text-sm font-bold text-white focus:outline-none" />
+              <input type="text" value={displayName || 'Not Set'} readOnly className="w-full bg-transparent text-sm font-bold text-white focus:outline-none" />
             </div>
             <div className="p-4 rounded-2xl bg-white/5 border border-white/5">
               <label className="text-[10px] font-black text-zinc-500 uppercase tracking-widest block mb-2">Email Address</label>
-              <input type="email" defaultValue="alpha@cybershield.node" className="w-full bg-transparent text-sm font-bold text-white focus:outline-none" />
+              <input type="email" value={email || 'Not Available'} readOnly className="w-full bg-transparent text-sm font-bold text-white focus:outline-none" />
             </div>
           </div>
         </section>
@@ -112,10 +122,16 @@ const SettingsView: React.FC = () => {
               <Trash2 className="h-6 w-6 text-red-500" />
             </button>
 
-            <button className="w-full flex items-center justify-between p-6 rounded-2xl border border-white/5 bg-white/5 hover:bg-white/10 transition-all group">
+            <button 
+              onClick={async () => {
+                await signOut(auth);
+                navigate('/auth');
+              }}
+              className="w-full flex items-center justify-between p-6 rounded-2xl border border-white/5 bg-white/5 hover:bg-white/10 transition-all group"
+            >
               <div className="text-left">
                 <div className="text-sm font-black text-white uppercase tracking-widest mb-1">Sign Out of Session</div>
-                <p className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Securely terminate the current alpha-node session</p>
+                <p className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Securely terminate the current session</p>
               </div>
               <LogOut className="h-6 w-6 text-zinc-500" />
             </button>

@@ -203,10 +203,23 @@ export const ChatInterface: React.FC<{ threats: Threat[], isAnalyzing: boolean }
                 <circle cx="50" cy="50" r="48" fill="none" stroke="currentColor" strokeWidth="0.5" strokeDasharray="4 4" />
               </svg>
             </motion.div>
-            <ShieldAlert className="h-16 w-16 text-zinc-700" />
+            <div className="h-20 w-20 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center relative overflow-hidden">
+              <div className="absolute inset-0 bg-[linear-gradient(transparent_0%,rgba(6,182,212,0.1)_50%,transparent_100%)] animate-scanline bg-[length:100%_4px]" />
+              <Terminal className="h-10 w-10 text-cyan-400" />
+            </div>
           </div>
-          <h2 className="text-2xl font-bold text-white mb-2">Threat Interface Idle</h2>
-          <p className="max-w-md text-zinc-500">Upload security logs or network captures to begin AI-powered deep packet inspection and anomaly detection.</p>
+          <h2 className="text-2xl font-black text-white uppercase tracking-tighter mb-2">Awaiting Telemetry</h2>
+          <p className="max-w-sm text-zinc-500 text-xs font-bold uppercase tracking-widest leading-relaxed">
+            Drag and drop security logs, EML files, or raw text below to initiate AI deep packet inspection.
+          </p>
+          
+          <div className="mt-8 flex flex-col gap-2 max-w-sm w-full text-left bg-black/40 border border-white/5 p-4 rounded-xl font-mono text-[10px] text-zinc-600 uppercase tracking-widest">
+            <div className="flex items-center gap-2">
+              <div className="h-1.5 w-1.5 rounded-full bg-cyan-500 animate-pulse" />
+              <span className="text-cyan-400/80">Neural Engines Online</span>
+            </div>
+            <div>&gt; _ Ready for input...</div>
+          </div>
         </div>
       )}
 
