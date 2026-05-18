@@ -1002,7 +1002,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const finalResult = mergeAllResults(bodyResult, senderResult, attachmentResult, ...urlResults);
 
       const url = msg.url || 'gmail';
-      await setCache(safeCacheKey('email_', url), {
+      
+      const combinedResult = {
         ...finalResult,
         bodyVerdict:      bodyResult?.verdict,
         senderVerdict:    senderResult?.verdict,
@@ -1013,7 +1014,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         subject:          msg.subject,
         senderEmail:      msg.senderEmail,
         senderName:       msg.senderName,
-      });
+      };
+
+      const key = tabId ? `c_email_tab_${tabId}` : `c_email_${url}`;
+      await chrome.storage.local.set({ [key]: { d: combinedResult, ts: Date.now() } });
 
       if (tabId) {
         recordScan(url, finalResult);

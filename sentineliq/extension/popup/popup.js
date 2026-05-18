@@ -150,11 +150,15 @@ async function scanActiveTab() {
   }
 
   if (tab.url.includes('mail.google.com')) {
-    const key = 'c_email_' + tab.url;
+    const key = `c_email_tab_${tab.id}`;
     const res = await chrome.storage.local.get(key);
     if (res[key]) {
       renderResult(res[key].d, tab.url);
       _renderEmailDetail(res[key].d);
+      
+      // Update engine chips with the email result
+      const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
+      engines.forEach(e => updateEngineRow(e, res[key].d));
       return;
     }
   }
@@ -405,9 +409,10 @@ chrome.runtime.onMessage.addListener(msg => {
     renderResult(msg.result, msg.url);
     refreshMainRing(msg.url);
   }
-  if (msg.type === 'EMAIL_RESULT') {
+  if (msg.type === 'EMAIL_SCAN_RESULT') {
     renderResult(msg.result, msg.url);
-    refreshMainRing(msg.url);
+    const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
+    engines.forEach(e => updateEngineRow(e, msg.result));
     _renderEmailDetail(msg.result);
   }
   if (msg.type === 'OPEN_POPUP_EMAIL_TAB') {
