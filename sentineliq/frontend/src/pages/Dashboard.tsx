@@ -173,7 +173,7 @@ const Dashboard: React.FC = () => {
   const headerInfo = TAB_HEADERS[activeTab] || TAB_HEADERS['Dashboard'];
 
   return (
-    <div className="flex h-screen w-full bg-black/20 backdrop-blur-3xl overflow-hidden">
+    <div className="flex h-full w-full bg-black/20 backdrop-blur-3xl overflow-hidden">
 
       {/* ── LEFT SIDEBAR ── */}
       <aside className="w-64 border-r border-white/5 flex flex-col bg-black/40 backdrop-blur-xl">
@@ -194,42 +194,45 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Nav */}
-        <nav className="flex-1 px-4 py-4 space-y-1">
-          {navItems.map((item, i) => (
-            <button
-              key={i}
-              onClick={() => setActiveTab(item.label)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold uppercase tracking-widest transition-all duration-300 group ${
-                activeTab === item.label
-                  ? 'bg-cyan-500/10 text-cyan-400 shadow-[inset_0_0_20px_rgba(6,182,212,0.1)] border border-cyan-500/20'
-                  : 'text-zinc-500 hover:text-white hover:bg-white/5 border border-transparent'
-              }`}
-            >
-              <item.icon className={`h-5 w-5 flex-shrink-0 ${activeTab === item.label ? 'text-cyan-400' : 'group-hover:text-cyan-400'}`} />
-              {item.label}
-            </button>
-          ))}
-        </nav>
-
-        {/* Benchmark KPIs */}
-        <div className="px-4 pb-3">
-          <div className="p-4 rounded-2xl bg-black/40 border border-white/5 space-y-1.5">
-            <div className="flex items-center gap-2 mb-3">
-              <Target className="h-3 w-3 text-cyan-400" />
-              <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Accuracy Benchmarks</span>
-            </div>
-            {BENCHMARKS.map(b => (
-              <div key={b.label} className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg ${b.bg} border ${b.border}`}>
-                <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide">{b.label}</span>
-                <span className={`text-[10px] font-black ${b.color}`}>{b.value}</span>
-              </div>
+        {/* Scrollable Center Area */}
+        <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col min-h-0">
+          {/* Nav */}
+          <nav className="px-4 py-4 space-y-1">
+            {navItems.map((item, i) => (
+              <button
+                key={i}
+                onClick={() => setActiveTab(item.label)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold uppercase tracking-widest transition-all duration-300 group ${
+                  activeTab === item.label
+                    ? 'bg-cyan-500/10 text-cyan-400 shadow-[inset_0_0_20px_rgba(6,182,212,0.1)] border border-cyan-500/20'
+                    : 'text-zinc-500 hover:text-white hover:bg-white/5 border border-transparent'
+                }`}
+              >
+                <item.icon className={`h-5 w-5 flex-shrink-0 ${activeTab === item.label ? 'text-cyan-400' : 'group-hover:text-cyan-400'}`} />
+                {item.label}
+              </button>
             ))}
+          </nav>
+
+          {/* Benchmark KPIs */}
+          <div className="px-4 pb-3 mt-auto">
+            <div className="p-4 rounded-2xl bg-black/40 border border-white/5 space-y-1.5">
+              <div className="flex items-center gap-2 mb-3">
+                <Target className="h-3 w-3 text-cyan-400" />
+                <span className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Accuracy Benchmarks</span>
+              </div>
+              {BENCHMARKS.map(b => (
+                <div key={b.label} className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg ${b.bg} border ${b.border}`}>
+                  <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wide">{b.label}</span>
+                  <span className={`text-[10px] font-black ${b.color}`}>{b.value}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
         {/* Privacy status + User profile */}
-        <div className="p-4 border-t border-white/5 space-y-3">
+        <div className="p-4 border-t border-white/5 space-y-3 flex-shrink-0 bg-black/20">
           {/* User chip */}
           {uid ? (
             <div className="flex items-center gap-3 px-2 py-2 rounded-xl bg-white/3 border border-white/5">
