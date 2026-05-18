@@ -15,7 +15,7 @@
  *   5. Merged result (worst verdict) is what gets cached — popup always reads the real verdict.
  */
 
-const DEFAULT_BACKEND = 'http://127.0.0.1:8000/api/v1';
+const DEFAULT_BACKEND = 'https://indianext-x-chitti2-0.onrender.com/api/v1';
 let currentBackendUrl = DEFAULT_BACKEND;
 
 // Load saved backend URL on startup

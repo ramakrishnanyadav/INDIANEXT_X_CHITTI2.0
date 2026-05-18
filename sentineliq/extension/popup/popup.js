@@ -335,7 +335,7 @@ $('#btn-save-settings').addEventListener('click', () => {
 });
 
 $('#btn-test-backend').addEventListener('click', async () => {
-  const url = ($('#input-backend').value.trim() || 'http://127.0.0.1:8000/api/v1').replace(/\/$/, '');
+  const url = ($('#input-backend').value.trim() || 'https://indianext-x-chitti2-0.onrender.com/api/v1').replace(/\/$/, '');
   const status = $('#test-status');
   status.textContent = 'Testing…';
   status.className = 'test-status';
