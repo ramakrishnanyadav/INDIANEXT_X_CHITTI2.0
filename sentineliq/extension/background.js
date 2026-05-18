@@ -212,11 +212,15 @@ function _whitelistAdd(url) {
   const normalized = _normalizeUrl(url);
   _approvedUrls.add(normalized); // Layer 1 — synchronous, instant
 
+  // Also purge the scan cache for this URL so the webNavigation listener
+  // doesn't find a stale MALICIOUS result and re-block the user.
+  chrome.storage.local.remove(safeCacheKey('c_', url));
+
   return chrome.storage.local
     .get('siq_whitelist')
     .then(({ siq_whitelist = {} }) => {
       const now = Date.now();
-      // Issue 2: prune expired entries while the object is open
+      // Prune expired entries while the object is open
       for (const [key, entry] of Object.entries(siq_whitelist)) {
         if (now >= entry.expires) delete siq_whitelist[key];
       }
@@ -414,7 +418,7 @@ async function scanUrl(url) {
     const resp = await fetch(`${currentBackendUrl}/analyze`, {
       method: 'POST', body: fd,
       headers: _buildHeaders(token),
-      signal: AbortSignal.timeout(12000),
+      signal: AbortSignal.timeout(5000), // Fail fast — Render free tier cold-starts in 15s+
     });
     // A15: 401 retry guard — attempt once after forced logout
     if (resp.status === 401) {
@@ -425,7 +429,7 @@ async function scanUrl(url) {
       const resp2 = await fetch(`${currentBackendUrl}/analyze`, {
         method: 'POST', body: fd2,
         headers: _buildHeaders(null),
-        signal: AbortSignal.timeout(12000),
+        signal: AbortSignal.timeout(5000),
       });
       if (!resp2.ok) throw new Error(`HTTP ${resp2.status}`);
       const data2 = await resp2.json();
@@ -437,10 +441,13 @@ async function scanUrl(url) {
     await setCache(url, data);
     return data;
   } catch (err) {
+    // Do NOT cache error results — a timeout should not permanently poison the
+    // URL cache with MALICIOUS, which would cause webNavigation to re-block.
     return {
       verdict: 'ERROR', confidence: 0, risk_score: 0, risk_band: 'UNKNOWN',
       shap_features: [], explanation: 'SentinelIQ backend unreachable.',
-      action: `Ensure your backend is running at ${currentBackendUrl}`, error: err.message,
+      action: `Backend offline or cold-starting. Try again in a moment.`,
+      error: err.message,
     };
   }
 }
@@ -463,7 +470,7 @@ async function scanContent(text, semanticDivergence = null) {
     const resp = await fetch(`${currentBackendUrl}/analyze`, {
       method: 'POST', body: fd,
       headers: _buildHeaders(token),
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(8000), // Fail fast — never block for 15s on a content scan
     });
     if (resp.status === 401) {
       await _forceLogout('401_invalid_token');
@@ -472,7 +479,10 @@ async function scanContent(text, semanticDivergence = null) {
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return await resp.json();
   } catch (err) {
-    console.error('[scanContent] error:', err);
+    // Timeout or network failure — return null so mergeResults uses URL verdict only.
+    // Do NOT return an ERROR object; ERROR has priority 0 same as BENIGN,
+    // but null tells mergeResults to skip content and use urlResult as-is.
+    console.warn('[scanContent] backend unreachable, skipping content scan:', err.message);
     return null;
   }
 }
@@ -833,6 +843,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             ? scanContent(msg.content, msg.semanticDivergence)
             : Promise.resolve(null),
         ]).then(async ([urlResult, contentResult]) => {
+          // If the URL scan itself errored (backend down), do NOT block.
+          // Blocking on an ERROR verdict would lock users out of sites whenever
+          // the Render free tier is cold-starting. Show ERROR badge instead.
+          if (urlResult.verdict === 'ERROR') {
+            if (tabId) setBadge(tabId, 'ERROR');
+            const r = {
+              ...urlResult,
+              explanation: 'Backend offline or cold-starting — scan deferred. Reload to retry.',
+            };
+            sendResponse({ result: r });
+            chrome.runtime.sendMessage({ type: 'PAGE_RESULT', result: r, url: msg.url }).catch(() => {});
+            return; // Do NOT call setCache — don't poison cache with ERROR
+          }
+
           const finalResult = mergeResults(urlResult, contentResult, hasPasswordForm);
           setCache(msg.url, finalResult);
 
