@@ -8,7 +8,7 @@
  *   - GDPR delete: deleteIncident(uid, incidentId) removes a user's own record
  */
 
-import type { Incident } from '@/types/security'
+import type { Incident, Threat, ShapData, RiskLevel } from '@/types/security'
 import { db } from '@/lib/firebase'
 import {
   collection,
@@ -34,7 +34,7 @@ function toThreatType(operation: string): string {
   }
 }
 
-function toRiskLevel(verdict: string, riskBand: string): string {
+function toRiskLevel(verdict: string, riskBand: string): RiskLevel {
   const band = (riskBand || '').toUpperCase()
   if (band.includes('CRITICAL') || verdict === 'MALICIOUS')  return 'Critical'
   if (band.includes('HIGH'))     return 'High'
