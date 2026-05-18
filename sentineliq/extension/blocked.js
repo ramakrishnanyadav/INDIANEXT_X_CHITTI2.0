@@ -115,17 +115,33 @@
     chrome.tabs.getCurrent(function (tab) {
       const tabId = tab ? tab.id : null;
 
-      chrome.runtime.sendMessage(
-        { type: 'WHITELIST_AND_NAVIGATE', url: destUrl, tabId },
-        function () {
-          // Background has acknowledged — navigation is already in flight.
-          msg.textContent = 'Navigating…';
-          // If background failed (e.g. no tabId), fall back to direct nav.
-          if (!tabId) {
-            window.location.href = destUrl;
+      if (!chrome.runtime?.id) {
+        msg.textContent = 'Extension updated. Reloading...';
+        window.location.reload();
+        return;
+      }
+
+      try {
+        chrome.runtime.sendMessage(
+          { type: 'WHITELIST_AND_NAVIGATE', url: destUrl, tabId },
+          function () {
+            if (chrome.runtime.lastError) {
+              msg.textContent = 'Extension updated. Reloading...';
+              window.location.reload();
+              return;
+            }
+            // Background has acknowledged — navigation is already in flight.
+            msg.textContent = 'Navigating…';
+            // If background failed (e.g. no tabId), fall back to direct nav.
+            if (!tabId) {
+              window.location.href = destUrl;
+            }
           }
-        }
-      );
+        );
+      } catch (err) {
+        msg.textContent = 'Extension updated. Reloading...';
+        window.location.reload();
+      }
     });
   });
 

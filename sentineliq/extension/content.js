@@ -24,6 +24,32 @@ const isAiInterface = (() => {
 })();
 const monitoredInputs = new WeakSet();
 
+// ── Context Invalidation Guard ───────────────────────────────────────────────
+// Prevent "Extension context invalidated" errors when the extension updates
+// but this old content script is still running in an unrefreshed tab.
+const _originalSendMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
+chrome.runtime.sendMessage = function(message, callback) {
+  if (!chrome.runtime?.id) {
+    console.warn('[SentinelIQ] Extension context invalidated. Please refresh the page.');
+    if (callback) callback(null);
+    return;
+  }
+  try {
+    if (callback) {
+      _originalSendMessage(message, (resp) => {
+        if (chrome.runtime.lastError) { /* ignore to suppress console error */ }
+        callback(resp);
+      });
+    } else {
+      const p = _originalSendMessage(message);
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+      return p;
+    }
+  } catch (err) {
+    if (callback) callback(null);
+  }
+};
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function debounce(fn, ms) {
   let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
