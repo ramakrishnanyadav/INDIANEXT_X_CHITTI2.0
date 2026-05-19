@@ -382,8 +382,8 @@ function _highlightDangerousLinks(linkVerdictMapEntries) {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     `;
     tooltip.textContent = isMalicious
-      ? \`⚠ SentinelIQ: Malicious URL (\${Math.round((result.confidence||0)*100)}% confidence)\`
-      : \`⚠ SentinelIQ: Suspicious URL (\${Math.round((result.confidence||0)*100)}% confidence)\`;
+      ? `⚠ SentinelIQ: Malicious URL (${Math.round((result.confidence||0)*100)}% confidence)`
+      : `⚠ SentinelIQ: Suspicious URL (${Math.round((result.confidence||0)*100)}% confidence)`;
 
     wrapper.appendChild(tooltip);
     linkEl.parentNode?.insertBefore(wrapper, linkEl);
