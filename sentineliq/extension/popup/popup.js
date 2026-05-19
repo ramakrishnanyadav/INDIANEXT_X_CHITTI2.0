@@ -158,9 +158,20 @@ async function scanActiveTab() {
       renderResult(res[key].d, tab.url);
       _renderEmailDetail(res[key].d);
       
-      // Update engine chips with the email result
       const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
       engines.forEach(e => updateEngineRow(e, res[key].d));
+      return;
+    } else {
+      // User is in the inbox but hasn't opened an email (or scan hasn't finished)
+      renderResult({
+        verdict: 'PENDING',
+        risk_score: 0,
+        explanation: 'SentinelIQ is monitoring your inbox. Please open an email to run a deep content scan.',
+        action: 'No email currently opened.',
+        shap_features: []
+      }, tab.url);
+      const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
+      engines.forEach(e => updateEngineRow(e, null)); // Sets them to PENDING
       return;
     }
   }
