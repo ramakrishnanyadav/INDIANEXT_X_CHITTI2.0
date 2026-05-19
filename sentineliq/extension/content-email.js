@@ -192,24 +192,28 @@ async function _triggerEmailScanWithRetry() {
       _scanInProgress = true;
       _injectScanningIndicator();
 
-      chrome.runtime.sendMessage({
-        type:        'SCAN_EMAIL_FULL',
-        bodyText:    data.bodyText,
-        subject:     data.subject,
-        senderName:  data.senderName,
-        senderEmail: data.senderEmail,
-        replyTo:     data.replyTo,
-        attachments: data.attachments,
-        links:       data.links,
-        url:         data.url,
-      });
+      if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
+        chrome.runtime.sendMessage({
+          type:        'SCAN_EMAIL_FULL',
+          bodyText:    data.bodyText,
+          subject:     data.subject,
+          senderName:  data.senderName,
+          senderEmail: data.senderEmail,
+          replyTo:     data.replyTo,
+          attachments: data.attachments,
+          links:       data.links,
+          url:         data.url,
+        });
+      }
       return; // Found and dispatched, stop the retry loop
     }
   }
 }
 
 function _injectScanningIndicator() {
-  chrome.runtime.sendMessage({ type: 'EMAIL_SCANNING' });
+  if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
+    chrome.runtime.sendMessage({ type: 'EMAIL_SCANNING' });
+  }
 }
 
 // ── Handle Results ──
@@ -329,7 +333,9 @@ function _injectWarningBanner(msg) {
   });
 
   document.getElementById('siq-banner-details')?.addEventListener('click', () => {
-    chrome.runtime.sendMessage({ type: 'OPEN_POPUP_EMAIL_TAB' });
+    if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
+      chrome.runtime.sendMessage({ type: 'OPEN_POPUP_EMAIL_TAB' });
+    }
   });
 }
 

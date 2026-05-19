@@ -67,8 +67,12 @@ function scanUrl(url) {
   return new Promise(resolve => {
     if (scanned.has(url)) { resolve(scanned.get(url)); return; }
     try {
+      if (typeof chrome === 'undefined' || !chrome?.runtime?.sendMessage) {
+        resolve({ verdict: 'ERROR', shap_features: [], explanation: 'Extension reloaded. Please refresh the page.', risk_score: 0 });
+        return;
+      }
       chrome.runtime.sendMessage({ type: 'SCAN_URL', url }, resp => {
-        if (chrome.runtime.lastError) {
+        if (chrome?.runtime?.lastError) {
           console.warn('[SentinelIQ] Extension context invalidated (reload page).', chrome.runtime.lastError.message);
           resolve({ verdict: 'ERROR', shap_features: [], explanation: 'Extension reloaded. Please refresh the page.', risk_score: 0 });
           return;
