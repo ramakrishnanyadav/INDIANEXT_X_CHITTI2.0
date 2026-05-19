@@ -66,7 +66,11 @@ function _getExpandedEmailBody() {
   
   for (let i = wrappers.length - 1; i >= 0; i--) {
     const body = wrappers[i].querySelector('.a3s.aiL') || wrappers[i].querySelector('.ii.gt div[dir="ltr"]') || wrappers[i].querySelector('.a3s');
-    if (body && body.offsetParent !== null) return body;
+    if (body) {
+      if (body.offsetParent !== null) return body;
+      // Fallback if offsetParent is null but it might still be the active email
+      if (i === wrappers.length - 1) return body; 
+    }
   }
   return null;
 }
@@ -74,12 +78,12 @@ function _getExpandedEmailBody() {
 function _isViewingEmail() {
   if (_isOutlook) {
     const body = _getExpandedEmailBody();
-    return body !== null && body.offsetParent !== null;
+    return body !== null;
   }
   const composeWindow = _safeQuery('.AD');
   if (composeWindow && composeWindow.offsetParent !== null) return false; // Composing
   const body = _getExpandedEmailBody();
-  return body !== null && body.offsetParent !== null;
+  return body !== null;
 }
 
 // ── Extraction ──
@@ -186,8 +190,8 @@ async function _triggerEmailScanWithRetry() {
     // Require substantial body text to prevent partial/early renders from triggering false positives
     if (data && data.bodyText && data.bodyText.trim().length > 50) {
       const emailHash = _hashEmail(data.subject + data.senderEmail);
-      const { siq_dismissed_banners = {} } = await chrome.storage.local.get('siq_dismissed_banners');
-      if (siq_dismissed_banners[emailHash]) return; // Stop retrying if already dismissed
+      // We no longer abort the scan if the banner is dismissed, because the popup still needs the cached results.
+      // The injection logic later will properly suppress the banner if it was dismissed.
 
       _scanInProgress = true;
       _injectScanningIndicator();
