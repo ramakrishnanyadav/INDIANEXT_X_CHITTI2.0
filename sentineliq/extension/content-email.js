@@ -186,7 +186,7 @@ async function _triggerEmailScanWithRetry() {
     // Require substantial body text to prevent partial/early renders from triggering false positives
     if (data && data.bodyText && data.bodyText.trim().length > 50) {
       const emailHash = _hashEmail(data.subject + data.senderEmail);
-      const { siq_dismissed_banners = {} } = await chrome.storage.session.get('siq_dismissed_banners');
+      const { siq_dismissed_banners = {} } = await chrome.storage.local.get('siq_dismissed_banners');
       if (siq_dismissed_banners[emailHash]) return; // Stop retrying if already dismissed
 
       _scanInProgress = true;
@@ -322,9 +322,9 @@ function _injectWarningBanner(msg) {
     const emailData = _extractEmailData();
     if (emailData) {
       const hash = _hashEmail(emailData.subject + emailData.senderEmail);
-      const { siq_dismissed_banners = {} } = await chrome.storage.session.get('siq_dismissed_banners');
+      const { siq_dismissed_banners = {} } = await chrome.storage.local.get('siq_dismissed_banners');
       siq_dismissed_banners[hash] = true;
-      await chrome.storage.session.set({ siq_dismissed_banners });
+      await chrome.storage.local.set({ siq_dismissed_banners });
     }
   });
 
