@@ -38,9 +38,41 @@ function _onEmailNavigation() {
     _scanInProgress = false;
     document.getElementById('siq-email-banner')?.remove();
     
+    if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
+      chrome.runtime.sendMessage({ type: 'CLEAR_EMAIL_CACHE' }).catch(() => {});
+    }
+    
     _triggerEmailScanWithRetry();
   }, 300);
 }
+
+// ── SPA Navigation Polling (Outlook Groups Fallback) ──
+// Outlook Groups does NOT change URL or Document Title when navigating between emails.
+let _currentEmailIdentity = '';
+setInterval(() => {
+  if (!_isOutlook) return;
+
+  if (!_isViewingEmail()) {
+    if (_currentEmailIdentity !== '') {
+      _currentEmailIdentity = '';
+      // We left the email, clear banner immediately
+      document.getElementById('siq-email-banner')?.remove();
+      if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
+        chrome.runtime.sendMessage({ type: 'CLEAR_EMAIL_CACHE' }).catch(() => {});
+      }
+    }
+    return;
+  }
+
+  const data = _extractEmailData();
+  if (data && data.bodyText) {
+    const identity = (data.senderEmail || '') + '|' + data.bodyText.substring(0, 50);
+    if (identity !== _currentEmailIdentity) {
+      _currentEmailIdentity = identity;
+      _onEmailNavigation();
+    }
+  }
+}, 800);
 
 // ── DOM Helpers ──
 function _safeQuery(selector, context = document) {
@@ -53,12 +85,38 @@ function _safeQueryAll(selector, context = document) {
 
 function _getExpandedEmailBody() {
   if (_isOutlook) {
-    return _safeQuery('.rps_Body') ||
+    const el = _safeQuery('.rps_Body') ||
            _safeQuery('[data-testid="message-body"]') ||
            _safeQuery('[aria-label="Message body"]') ||
+           _safeQuery('[aria-label="Message Body"]') ||
+           _safeQuery('[data-automation-id="MessageBody"]') ||
+           _safeQuery('div[id^="UniqueMessageBody"]') ||
+           _safeQuery('div.BodyFragment') ||
+           _safeQuery('div.item-body') ||
+           _safeQuery('div.allowTextSelection') ||
+           _safeQuery('.x_BodyFragment') ||
+           _safeQuery('.x_rps_Body') ||
+           _safeQuery('div.wide-content-host') ||
+           _safeQuery('div[data-testid="reading-pane"]') ||
            _safeQuery('[data-app-section="ReadingPane"] .rps_Body') ||
            _safeQuery('[data-app-section="ReadingPane"] [role="main"]') ||
-           _safeQuery('[data-app-section="ReadingPane"]'); // Last resort scoped to reading pane
+           _safeQuery('[aria-label="Reading Pane"] [role="main"]') ||
+           _safeQuery('[data-app-section="ReadingPane"]') ||
+           _safeQuery('[data-automation-id="ReadingPane"]') ||
+           _safeQuery('[aria-label="Reading Pane"]'); // Last resort scoped to reading pane
+
+    if (el) return el;
+
+    // Outlook Groups generic fallback: if URL has deeplink=mail, an email is open
+    if (location.href.includes('deeplink=mail')) {
+      const fallback = _safeQuery('[role="main"]') || document.body;
+      // If the reading pane is empty, Outlook shows this placeholder text
+      if (fallback && fallback.innerText && fallback.innerText.includes('Select an item to read')) {
+        return null;
+      }
+      return fallback;
+    }
+    return null;
   }
 
   const wrappers = _safeQueryAll('.h7');
@@ -174,13 +232,19 @@ function _hashEmail(str) {
   return 'email_' + Math.abs(h).toString(36);
 }
 
+let _lastExtractedBodyText = '';
+let _lastExtractedUrl = '';
+let _expectedNavUrl = '';
+
 // ── Trigger Scan ──
 async function _triggerEmailScanWithRetry() {
   const delays = [500, 1000, 1500, 2000, 3000];
+  _expectedNavUrl = location.href;
   
   for (const delay of delays) {
     await new Promise(r => setTimeout(r, delay));
     
+    if (_expectedNavUrl !== location.href) return; // User navigated away during delay
     if (_scanInProgress) return; // Prevent duplicate scanning
     
     if (!_isOutlook && !location.href.includes('#')) continue;
@@ -189,11 +253,20 @@ async function _triggerEmailScanWithRetry() {
     const data = _extractEmailData();
     // Require substantial body text to prevent partial/early renders from triggering false positives
     if (data && data.bodyText && data.bodyText.trim().length > 50) {
+      
+      // Detect stale SPA DOM: if the URL changed but the DOM text is exactly the same as the previous URL's email, the DOM hasn't updated yet!
+      const isLastDelay = (delay === delays[delays.length - 1]);
+      if (!isLastDelay && data.bodyText === _lastExtractedBodyText && data.url !== _lastExtractedUrl) {
+        continue; // DOM is stale, wait for next delay
+      }
+
       const emailHash = _hashEmail(data.subject + data.senderEmail);
       // We no longer abort the scan if the banner is dismissed, because the popup still needs the cached results.
       // The injection logic later will properly suppress the banner if it was dismissed.
 
       _scanInProgress = true;
+      _lastExtractedBodyText = data.bodyText;
+      _lastExtractedUrl = data.url;
       _injectScanningIndicator();
 
       if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
@@ -287,6 +360,10 @@ function _injectWarningBanner(msg) {
     position: relative;
     z-index: 1000;
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 800px;
+    line-height: 1.5;
   `;
   banner.innerHTML = `
     <div style="display:flex;align-items:flex-start;gap:10px">
@@ -338,7 +415,7 @@ function _injectWarningBanner(msg) {
 
   document.getElementById('siq-banner-details')?.addEventListener('click', () => {
     if (typeof chrome !== 'undefined' && chrome?.runtime?.sendMessage) {
-      chrome.runtime.sendMessage({ type: 'OPEN_POPUP_EMAIL_TAB' });
+      chrome.runtime.sendMessage({ type: 'OPEN_DASHBOARD' });
     }
   });
 }

@@ -193,9 +193,8 @@ async def get_narration(
             _prompt = prompt
 
             def _call() -> Any:
-                assert _client is not None
                 return _client.models.generate_content(
-                    model="gemini-2.5-flash-preview-04-17",
+                    model="gemini-2.5-flash",
                     contents=_prompt,
                 )
 

@@ -37,7 +37,7 @@ flowchart TD
         ENS["Ensemble Voter\nensemble.py\n\nWeighted cross-engine vote\nEscalation bonus\nComposite confidence"]
         RISK["Risk Scorer\nrisk_scorer.py\n\n0–100 score\nCRITICAL · HIGH · MEDIUM · LOW"]
         XAI["Explainability\nSHAP features · Token highlights\nFeature attribution weights"]
-        NAR["Gemini Narrator\ngemini_narrator.py\n\nTier 1: Gemini 2.0 Flash\nTier 2: Short prompt fallback\nTier 3: Offline template"]
+        NAR["Gemini Narrator\ngemini_narrator.py\n\nTier 1: gemini-2.5-flash\nTier 2: Short prompt fallback\nTier 3: Offline template"]
         DB["Firestore\nIncident logging\nHistorical rate tracking"]
     end
 
@@ -186,3 +186,18 @@ SentinelIQ catches threats **before they appear on any blocklist**:
 4. **Homoglyph normalization** → Catches Unicode lookalike attacks (`раypal.com`)
 
 > **"We catch what Google Safe Browsing misses — on day zero."**
+
+---
+
+## Architecture Decision Record (ADR)
+
+### ADR 1: Gemini Rate Limiting & Email Engine Constraints
+**Context**: The email threat engine natively routes raw email text and heuristic structural signals through a pipeline that relies heavily on Gemini (Layer C) to provide cross-validation and natural language explainability.
+**Decision**: We have integrated a Token Bucket Rate Limiter with an exponential backoff retry loop (1s → 16s) directly into the email and phishing engines. 
+**Operational Constraint**: On the Google AI Studio free tier (20 requests/day limits), the email engine will operate primarily on heuristics and BERT in production. Gemini cross-validation will be the exception, not the rule. The architecture degrades gracefully, meaning scans will complete successfully without Gemini, yielding slightly lower explainability but maintaining 0 latency and 100% heuristic coverage.
+**Trigger Condition**: Upgrade to a paid Gemini API quota when email scan volume exceeds approximately 50 scans per day.
+
+### ADR 2: Safe Browsing Degradation
+**Context**: The URL Engine queries Google Safe Browsing as part of its heuristic signal extraction.
+**Operational Constraint**: If the `SAFE_BROWSING_API_KEY` is missing in the production environment, the engine gracefully skips the check. However, this incurs a static structural penalty (reducing detection robustness on known threat lists). 
+**Decision**: The system is permitted to deploy without the key, but it will operate in a degraded state for zero-day URL reputation until configured.

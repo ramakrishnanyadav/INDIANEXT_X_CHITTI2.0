@@ -986,12 +986,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (tabId) setBadge(tabId, 'SCANNING');
 
     Promise.all([
-      Promise.race([
-        scanEmailBody(msg.bodyText),
-        new Promise(resolve => setTimeout(() => resolve({ verdict:'ERROR', confidence:0, shap_features:[], explanation:'Body scan timeout' }), EMAIL_SCAN_TIMEOUT_MS))
-      ]),
       scanEmailUrls(msg.links || [])
-    ]).then(async ([bodyResult, urlScanObj]) => {
+    ]).then(async ([urlScanObj]) => {
       const urlResults = urlScanObj.results;
       const scannedUrls = urlScanObj.scannedUrls;
       const linkVerdictMap = urlScanObj.linkVerdictMap;
@@ -999,13 +995,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const senderResult = analyzeSender(msg.senderName, msg.senderEmail, msg.replyTo);
       const attachmentResult = _scoreAttachments(msg.attachments || []);
 
-      const finalResult = mergeAllResults(bodyResult, senderResult, attachmentResult, ...urlResults);
+      // Translate frontend heuristic results into the backend vector format
+      const hasSuspiciousLinks = urlResults.some(r => r.verdict !== 'BENIGN' && r.verdict !== 'ERROR');
+      
+      const payload = {
+        bodyText: msg.bodyText,
+        sender_mismatch: senderResult.verdict !== 'BENIGN',
+        attachment_risk: attachmentResult.verdict === 'MALICIOUS' ? 1.0 : (attachmentResult.verdict === 'SUSPICIOUS' ? 0.6 : 0.0),
+        suspicious_links: hasSuspiciousLinks ? 0.8 : 0.0,
+      };
+
+      const finalResult = await scanEmail(payload);
 
       const url = msg.url || 'gmail';
       
       const combinedResult = {
         ...finalResult,
-        bodyVerdict:      bodyResult?.verdict,
         senderVerdict:    senderResult?.verdict,
         attachmentVerdict: attachmentResult?.verdict,
         urlResults,
@@ -1051,6 +1056,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'EMAIL_SCANNING') {
     if (tabId) setBadge(tabId, 'SCANNING');
+    return true;
+  }
+
+  if (msg.type === 'CLEAR_EMAIL_CACHE') {
+    if (tabId) {
+      chrome.storage.local.remove(`c_email_tab_${tabId}`);
+      setBadge(tabId, '');
+    }
+    return true;
+  }
+
+  if (msg.type === 'OPEN_DASHBOARD') {
+    chrome.tabs.create({ url: 'http://localhost:5000/dashboard' });
     return true;
   }
 

@@ -39,6 +39,35 @@ def _score_email_vector(vector: Dict[str, Any]) -> Dict[str, Any]:
     raw_score = 0.0
     feature_attribution = []
     
+    # 0. Context-Aware Body Heuristics
+    body_text = str(vector.get("bodyText", "")).strip()
+    if body_text:
+        from engines.phishing import _heuristic_score
+        h_res = _heuristic_score(body_text)
+        
+        body_score = h_res.get("score", 0.0)
+        is_legit = h_res.get("is_legit", False)
+        dampened_amount = h_res.get("dampened_amount", 0.0)
+        
+        if body_score > 0:
+            w = 0.40 * min(1.0, body_score)
+            raw_score += w
+            feature_attribution.append({
+                "feature": f"Email Body Phishing Heuristics ({int(body_score*100)}%)",
+                "weight": round(w, 3),
+                "direction": "positive",
+                "category": "active_attack_signal"
+            })
+            
+        if is_legit and dampened_amount > 0:
+            dw = -0.40 * min(1.0, dampened_amount)
+            feature_attribution.append({
+                "feature": "Context: Institutional/Educational Pattern",
+                "weight": round(dw, 3),
+                "direction": "negative",
+                "category": "trust_signal"
+            })
+
     # 1. Sender Mismatch (High Risk)
     sender_mismatch = bool(vector.get("sender_mismatch", False))
     if sender_mismatch:
@@ -123,6 +152,11 @@ async def _gemini_vector_narrator(signals: List[Dict[str, Any]], app_state: Any)
     if not getattr(app_state, "gemini_available", False) or not getattr(app_state, "gemini_client", None):
         return {"explanation": "Gemini unavailable.", "action": ""}
 
+    from engines.phishing import _gemini_token_bucket_acquire
+    if not await _gemini_token_bucket_acquire():
+        logger.warning("[Email] Skipped Gemini — token bucket exhausted.")
+        return {"explanation": "Gemini rate limited.", "action": ""}
+
     client = app_state.gemini_client
     
     # Format signals into a neat string list
@@ -131,25 +165,42 @@ async def _gemini_vector_narrator(signals: List[Dict[str, Any]], app_state: Any)
     
     prompt = EmailConfig.GEMINI_PROMPT_TEMPLATE.format(signals=signal_text)
     
-    try:
-        def _call() -> Any:
-            return client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+    backoff = 1.0
+    last_exc: Exception = Exception("unknown")
+
+    for attempt in range(4):
+        try:
+            def _call() -> Any:
+                return client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                
+            loop = asyncio.get_event_loop()
+            resp = await asyncio.wait_for(loop.run_in_executor(None, _call), timeout=8.0)
             
-        loop = asyncio.get_event_loop()
-        resp = await asyncio.wait_for(loop.run_in_executor(None, _call), timeout=8.0)
-        
-        raw = str(resp.text).strip()
-        raw = re.sub(r"^```[a-z]*\n?", "", raw)
-        raw = re.sub(r"\n?```$", "", raw)
-        
-        parsed = json.loads(raw)
-        return {
-            "explanation": parsed.get("explanation", ""),
-            "action": parsed.get("action", "")
-        }
-    except Exception as exc:
-        logger.debug(f"Email Gemini Narration failed: {exc}")
-        return {"explanation": "", "action": ""}
+            raw = str(resp.text).strip()
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw)
+            
+            parsed = json.loads(raw)
+            return {
+                "explanation": parsed.get("explanation", ""),
+                "action": parsed.get("action", "")
+            }
+        except json.JSONDecodeError as jde:
+            logger.warning("[Email] JSON parse failed on attempt %d: %s", attempt + 1, jde)
+            return {"explanation": "", "action": ""}
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if "429" in err_str or "quota" in err_str or "too many requests" in err_str:
+                logger.warning("[Email] 429 Rate Limit on attempt %d. Backing off for %.1fs...", attempt + 1, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(16.0, backoff * 2.0)
+                last_exc = exc
+            else:
+                logger.debug(f"Email Gemini Narration failed: {exc}")
+                return {"explanation": "", "action": ""}
+
+    logger.error("[Email] Gemini exhausted all 4 attempts. Last error: %s", last_exc)
+    return {"explanation": "", "action": ""}
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 

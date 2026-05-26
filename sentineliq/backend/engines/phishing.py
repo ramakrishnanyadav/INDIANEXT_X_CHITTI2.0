@@ -151,14 +151,26 @@ def _heuristic_score(text: str) -> Dict[str, Any]:
     # A completely clean text gets a non-zero score by design — it avoids
     # hard 0% confidence in UI. Document this explicitly so tests/dashboards
     # are not surprised. To get a true 0.0, check signal_count == 0 instead.
-    capped = min(raw_score, 2.0)  # allow accumulation up to 2.0 before cap
-    smoothed = 1 / (1 + math.exp(-4 * (capped - 0.5)))  # sigmoid centered at 0.5
+    # Cap at 1.0, apply sigmoid smoothing for confidence feel.
+    capped = min(raw_score, 2.0)
+    smoothed = 1 / (1 + math.exp(-4 * (capped - 0.5)))
+    
+    is_legit = any(pat.search(normalized_text) for pat in _COMPILED_LEGITIMACY)
+    dampening_applied = False
+    original_smoothed = smoothed
+
+    if is_legit:
+        smoothed = smoothed * 0.33
+        raw_score = raw_score * 0.33
+        dampening_applied = True
 
     return {
         "score": float(int(smoothed * 10000)) / 10000.0,
         "triggered": list(set(triggered_categories)),
         "signal_count": len(set(triggered_categories)),
-        "raw_score": float(int(float(raw_score) * 10000)) / 10000.0
+        "raw_score": float(int(float(raw_score) * 10000)) / 10000.0,
+        "is_legit": is_legit,
+        "dampened_amount": float(int((original_smoothed - smoothed) * 10000)) / 10000.0 if dampening_applied else 0.0
     }
 
 
@@ -509,6 +521,15 @@ async def detect_phishing(text: str, app_state: Any, semantic_divergence: Option
                 "weight":    round(absence["absence_score"] / max(1, len(absence["absence_signals"])), 4),
                 "direction": "positive",
                 "category":  "trust_signal_absence",
+            })
+            
+        # Category 3: Contextual Dampening
+        if heuristic_result.get("is_legit", False) and heuristic_result.get("dampened_amount", 0.0) > 0:
+            attribution.append({
+                "feature": "Context: Institutional/Educational Pattern",
+                "weight": -round(heuristic_result["dampened_amount"], 4),
+                "direction": "negative",
+                "category": "trust_signal",
             })
 
         # Sort: active signals first (higher weight), absences last

@@ -298,6 +298,8 @@ class PhishingConfig:
         r'(?i)\b(quarterly|earnings|statement|report attached|financial)\b',
         r'(?i)\b(newsletter|weekly update|digest|subscription confirmed)\b',
         r'(?i)(fedex|ups|dhl|usps)\.com\b',
+        r'(?i)\b(class|lab|professor|student|assignment|semester|syllabus|coursework)\b',
+        r'(?i)\b(dear\s+all|regards,)\b',
     ]
 
     GEMINI_PROMPT_TEMPLATE: str = (
@@ -700,7 +702,7 @@ class EmailConfig:
         "Analyze this structured threat feature vector. The email text is hidden for privacy.\n"
         "Generate a clear, professional security briefing explaining WHY this email is a threat based on the signals.\n"
         "Respond ONLY with valid JSON (no markdown fences):\n"
-        '{"explanation": "Clear 2-sentence explanation of the threat", "action": "Specific recommended action"}\n'
+        '{{"explanation": "Clear 2-sentence explanation of the threat", "action": "Specific recommended action"}}\n'
         'Threat Signals: {signals}\n'
     )
 

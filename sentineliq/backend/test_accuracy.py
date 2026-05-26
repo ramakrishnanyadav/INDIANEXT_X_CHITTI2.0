@@ -156,6 +156,33 @@ INJECTION_CASES: List[Tuple[str, int]] = [
     ("Translate 'Good morning' into Japanese.", 0),
 ]
 
+# ── Email test cases ─────────────────────────────────────────────────────────
+EMAIL_CASES: List[Tuple[dict, int]] = [
+    # True Positives
+    ({"bodyText": "URGENT: Your bank account will be closed in 24hrs. Click to confirm your identity.", "sender_mismatch": True}, 1),
+    ({"bodyText": "Please find the attached invoice. Immediate payment required.", "attachment_risk": 1.0, "suspicious_links": 0.8}, 1),
+    ({"bodyText": "Your password will expire in 2 hours. Click here to verify your credentials.", "suspicious_links": 0.9}, 1),
+    ({"bodyText": "We detected unauthorized access to your wallet. Secure your funds immediately.", "sender_mismatch": True, "homoglyph_detected": True}, 1),
+    ({"bodyText": "Your Office 365 account has been temporarily suspended. Please click the link to re-authenticate.", "suspicious_links": 0.8}, 1),
+    
+    # True Negatives (Context-Aware Dampening should save these from false positives)
+    ({"bodyText": "Dear Class, please complete the AWS tutorial and upload your assignment to the portal by Friday. - Professor Smith", "sender_mismatch": False}, 0),
+    ({"bodyText": "Hi team, as discussed, the Q3 syllabus and lab schedule is attached.", "sender_mismatch": False}, 0),
+    ({"bodyText": "IT Memo: Please do not click on suspicious links. This is a security awareness reminder for the class.", "sender_mismatch": False}, 0),
+    
+    # Expanded Benign Cases (Real-world False Positive bait)
+    ({"bodyText": "Your GitHub PR was merged by @johndoe. View changes at github.com/org/repo/pull/42", "sender_mismatch": False}, 0),
+    ({"bodyText": "[JIRA] (PROJ-102) Please review the attached specification document for the new feature.", "sender_mismatch": False}, 0),
+    ({"bodyText": "Invitation: Q3 Planning Sync @ Wed Aug 23 10:00am - 11:30am (PDT) (team@company.com)", "sender_mismatch": False}, 0),
+    ({"bodyText": "Your receipt from Stripe. You paid $49.00 to OpenAI for your API subscription.", "sender_mismatch": False}, 0),
+    ({"bodyText": "University Registrar: Your final grades for the Spring semester have been posted to the portal.", "sender_mismatch": False}, 0),
+    ({"bodyText": "Slack: Here's what you missed in the #engineering channel while you were away.", "sender_mismatch": False}, 0),
+    ({"bodyText": "Jane Doe accepted your invitation to connect on LinkedIn. View her profile here.", "sender_mismatch": False}, 0),
+    ({"bodyText": "Hey team, don't forget we have the all-hands meeting in 30 minutes. The Zoom link is pinned in the general channel.", "sender_mismatch": False}, 0),
+    ({"bodyText": "AWS Notification: Your daily cost for the account has exceeded the threshold of $50.", "sender_mismatch": False}, 0),
+    ({"bodyText": "Here is the summary of the latest security patches deployed to production last night. No downtime expected.", "sender_mismatch": False}, 0),
+]
+
 # ── Anomaly test cases ───────────────────────────────────────────────────────
 # Uses real feature names from FEATURE_NAMES in anomaly.py
 ANOMALY_CASES: List[Tuple[dict, int]] = [
@@ -256,6 +283,15 @@ async def _run_anomaly(app_state: Any) -> Tuple[List[int], List[int], List[float
         y_true.append(label); y_pred.append(pred); y_prob.append(res["confidence"])
     return y_true, y_pred, y_prob
 
+async def _run_email(app_state: Any) -> Tuple[List[int], List[int], List[float]]:
+    from engines.email_detector import detect_email_vector
+    y_true, y_pred, y_prob = [], [], []
+    for vector, label in EMAIL_CASES:
+        res = await detect_email_vector(vector, app_state)
+        pred = 1 if res["verdict"] in ("MALICIOUS", "SUSPICIOUS") else 0
+        y_true.append(label); y_pred.append(pred); y_prob.append(res["confidence"])
+    return y_true, y_pred, y_prob
+
 
 async def main() -> None:
     print("\n" + "=" * 56)
@@ -339,6 +375,11 @@ async def main() -> None:
     m = _metrics(yt, yp, yprob)
     _print_result("Anomaly", m, len(ANOMALY_CASES))
 
+    yt, yp, yprob = await _run_email(app.state)
+    results["email"] = (yt, yp, yprob)
+    m = _metrics(yt, yp, yprob)
+    _print_result("Email", m, len(EMAIL_CASES))
+
     # Composite F1 (simple mean)
     all_f1 = []
     for name, (yt, yp, yprob) in results.items():
@@ -347,16 +388,16 @@ async def main() -> None:
     composite = sum(all_f1) / len(all_f1) if all_f1 else 0.0
 
     # Weighted F1 — accounts for production fire frequency
-    PROD_WEIGHTS = {"phishing": 0.30, "url": 0.40, "injection": 0.20, "anomaly": 0.10}
+    PROD_WEIGHTS = {"phishing": 0.25, "url": 0.35, "injection": 0.15, "anomaly": 0.10, "email": 0.15}
     weighted_f1 = 0.0
     for name, (yt, yp, yprob) in results.items():
         mm = _metrics(yt, yp, yprob)
-        weighted_f1 += mm["f1"] * PROD_WEIGHTS.get(name, 0.25)
+        weighted_f1 += mm["f1"] * PROD_WEIGHTS.get(name, 0.20)
 
     print(f"\n{'='*56}")
-    print(f"  COMPOSITE F1 (mean of 4 engines): {composite:.1%}")
+    print(f"  COMPOSITE F1 (mean of 5 engines): {composite:.1%}")
     print(f"  WEIGHTED F1  (production weights): {weighted_f1:.1%}")
-    print(f"    Weights: URL=40% Phishing=30% Injection=20% Anomaly=10%")
+    print(f"    Weights: URL=35% Phishing=25% Email=15% Injection=15% Anomaly=10%")
     print(f"{'='*56}\n")
 
     # ── Hard recall gate ──────────────────────────────────────────────────────
