@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://via.placeholder.com/120x120/1e1b4b/6366f1?text=IQ" alt="SentinelIQ Logo" width="120" height="120" />
+  <img src="assets/logo.png" alt="SentinelIQ Logo" width="150" style="border-radius: 20px; margin-bottom: 20px;" />
   <h1>SentinelIQ</h1>
   <p><b>Explainable Real-Time Browser Threat Intelligence</b></p>
   
@@ -33,55 +33,51 @@
 Our highly optimized pipeline operates on a lightweight local filtering model before escalating suspicious URLs for deep analysis, guaranteeing zero latency for safe domains.
 
 ```mermaid
-%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#1e1b4b', 'primaryTextColor': '#a5b4fc', 'primaryBorderColor': '#6366f1', 'lineColor': '#8b5cf6', 'secondaryColor': '#0f172a', 'tertiaryColor': '#064e3b'}}}%%
 flowchart TD
-    A["🌐 Browser\n(Chrome Extension)"]:::ext
+    %% Browser & Extension
+    Browser["🌐 Browser (Chrome)"] --> ExtLayer
 
-    subgraph EXT["Extension Layer"]
+    subgraph ExtLayer["🧩 Extension Layer"]
         direction TB
-        C1["content.js\nLink hover scan\nPassword form detect"]
-        C2["background.js\nService worker\nScan pipeline"]
-        C3["popup.html\nAnalyst briefing UI"]
+        Content["content.js\n(Hover & Forms)"]
+        Background["background.js\n(Service Worker)"]
+        Popup["popup.html\n(Risk Dashboard)"]
+        Content -->|"Signals"| Background
     end
 
-    subgraph LOCAL["Local Fast-Path (0ms, no API)"]
-        L1["✓ Trusted domain check"]
-        L2["✓ localhost / private IP"]
-        L3["✓ Cache hit (30 min TTL)"]
+    %% Local Fast Path
+    Background -->|"Validate"| FastPath
+    subgraph FastPath["⚡ Local Fast-Path (0ms Latency)"]
+        direction TB
+        Trusted["✓ Trusted Domains"]
+        LocalIP["✓ Localhost / Private IPs"]
+        Cache["✓ Local Cache (30m TTL)"]
     end
 
-    subgraph API["FastAPI Backend (4-Engine Ensemble)"]
+    %% API / Backend
+    FastPath -->|"Miss → Escalate"| API
+    subgraph API["🧠 FastAPI Backend (4-Engine Ensemble)"]
         direction TB
-        R["Router (/api/v1/analyze)"]
+        Router["Router (/api/v1/analyze)"]
         
-        E1["🔗 URL Engine\n(BERT, WHOIS, DOM)"]
-        E2["📧 Phishing Engine\n(Heuristics, Gemini)"]
-        E3["🤖 Injection Engine\n(Pattern matching)"]
-        E4["📊 Anomaly Engine\n(Isolation Forest)"]
+        Router --> Engines
+        subgraph Engines["AI Threat Engines"]
+            direction LR
+            URL["🔗 URL Engine\n(BERT, WHOIS)"]
+            Phish["📧 Phishing Engine\n(Heuristics, Gemini)"]
+            Inject["🤖 Injection Engine\n(Pattern Match)"]
+            Anomaly["📊 Anomaly Engine\n(Isolation Forest)"]
+        end
 
-        ENS["Ensemble Voter\n(Weighted cross-engine vote)"]
-        RISK["Risk Scorer (0-100)"]
-        XAI["Explainability (SHAP)"]
-        NAR["Gemini Narrator\n(Analyst Briefings)"]
+        Engines --> Voter["⚖️ Ensemble Voter\n(Confidence Scoring)"]
+        Voter --> Risk["🎯 Risk Scorer (0-100)"]
+        Risk --> XAI["🔍 Explainable AI (SHAP)"]
+        XAI --> Narrator["💬 Gemini Narrator\n(Analyst Briefings)"]
     end
 
-    A --> EXT
-    C1 -->|"hover/form"| C2
-    C2 -->|"check"| LOCAL
-    LOCAL -->|"miss → escalate"| API
-    R --> E1 & E2 & E3 & E4
-    E1 & E2 & E3 & E4 --> ENS
-    ENS --> RISK --> XAI --> NAR
-    API -->|"JSON response"| C2
-    C2 --> C3
-
-    classDef ext fill:#1e1b4b,stroke:#6366f1,color:#a5b4fc,stroke-width:2px
-    classDef local fill:#064e3b,stroke:#10b981,color:#6ee7b7,stroke-width:2px
-    classDef api fill:#0f172a,stroke:#334155,color:#94a3b8,stroke-width:2px
-    
-    class A ext
-    class L1,L2,L3 local
-    class R,E1,E2,E3,E4,ENS,RISK,XAI,NAR api
+    %% Return Path
+    Narrator -->|"JSON Response"| Background
+    Background --> Popup
 ```
 
 ---
