@@ -168,6 +168,20 @@ The FastAPI backend exposes a robust suite of REST endpoints, built for low-late
 
 ---
 
+## 🔍 Chrome Web Store Reviewers Note
+
+**Regarding `host_permissions` for localhost/127.0.0.1:**
+SentinelIQ allows privacy-conscious enterprise users to self-host the FastAPI threat detection backend locally. The `http://127.0.0.1:8000/*` and `http://localhost:8000/*` permissions are explicitly requested to allow the extension to communicate with this user-hosted backend without triggering cross-origin network errors. The default configuration points to our secure production endpoint, and localhost is only accessed if the user manually configures it in the extension's Settings panel.
+
+### Testing HTML Smuggling (Local Files)
+If you are evaluating SentinelIQ against downloaded malicious `.html` files (HTML smuggling), **Chrome disables file access for extensions by default**. To enable this zero-day defense:
+1. Navigate to `chrome://extensions/`
+2. Click **Details** on the SentinelIQ extension.
+3. Toggle **Allow access to file URLs** to **ON**.
+Without this permission, Chrome physically blocks `content.js` from reading the DOM of local files, preventing SentinelIQ from scanning the payload.
+
+---
+
 <div align="center">
   <sub>Built with 🔒 by the SentinelIQ Security Team.</sub>
 </div>

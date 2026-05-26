@@ -258,7 +258,7 @@ function safeSendMessage(msg) {
   } catch (_) {}
 }
 
-function isLocal(url) {
+function isPrivateIpOrLocalhost(url) {
   try {
     const h = new URL(url).hostname;
     return h === 'localhost' || h.startsWith('127.') || h.startsWith('192.168.') || h.startsWith('10.');
@@ -266,9 +266,16 @@ function isLocal(url) {
   return false;
 }
 
+function isBypassedUrl(url) {
+  return url.startsWith('file://') || isPrivateIpOrLocalhost(url);
+}
+
+const isLocal = isBypassedUrl; // backwards compat alias
+
 // ── Cache (chrome.storage.local, full URL keys) ───────────────────────────────
 async function getCached(url) {
-  const key = safeCacheKey('c_', url);
+  const norm = _normalizeUrl(url);
+  const key = safeCacheKey('c_', norm);
   const res = await chrome.storage.local.get(key);
   if (!res[key]) return null;
   if (Date.now() - res[key].ts > CACHE_TTL_MS) { chrome.storage.local.remove(key); return null; }
@@ -276,7 +283,8 @@ async function getCached(url) {
 }
 
 async function setCache(url, data) {
-  const key = safeCacheKey('c_', url);
+  const norm = _normalizeUrl(url);
+  const key = safeCacheKey('c_', norm);
   await chrome.storage.local.set({ [key]: { d: data, ts: Date.now() } });
   const all = await chrome.storage.local.get(null);
   const keys = Object.keys(all).filter(k => k.startsWith('c_'));
@@ -309,7 +317,10 @@ function mergeResults(urlResult, contentResult, hasPasswordForm) {
   }
 
   // Fix #6: Preserve BYPASSED state so UI can show it distinctly from BENIGN
-  if (urlResult.verdict === 'BYPASSED' && (!contentResult || contentResult.verdict === 'BENIGN')) {
+  if (urlResult.verdict === 'BYPASSED' && 
+      (!contentResult || 
+       (contentResult.verdict === 'BENIGN' && 
+        (contentResult.shap_features || []).length === 0))) {
     return {
       verdict: 'BYPASSED',
       confidence: 0,
@@ -418,10 +429,10 @@ async function scanUrl(url) {
     return BENIGN_FAST('Browser internal page.');
   }
 
-  // Fix #1: Localhost BYPASSES URL structural analysis, NOT content analysis.
+  // Fix #1: Localhost and file:// BYPASS URL structural analysis, NOT content analysis.
   // The bypass returns BYPASSED (not BENIGN) so the merger knows to defer to content scan.
-  if (isLocal(url)) {
-    return BYPASSED_RESULT('Local address — URL structural analysis bypassed. Content scan active.');
+  if (isBypassedUrl(url)) {
+    return BYPASSED_RESULT('Local or private address — URL structural analysis bypassed. Content scan active.');
   }
 
   const cached = await getCached(url);
@@ -517,11 +528,9 @@ async function scanContent(text, semanticDivergence = null) {
     //
     // DOMException (AbortError/TimeoutError) does not have a useful .message on all
     // Chrome versions — use String(err) as fallback for clear console output.
-    const label = err.name === 'TimeoutError' || err.name === 'AbortError'
-      ? 'backend cold-starting (timeout)'
-      : String(err.message || err);
-    console.warn(`[scanContent] skipped — ${label}`);
-    return null;
+    const isTimeout = err.name === 'TimeoutError' || err.name === 'AbortError';
+    console.warn(`[scanContent] skipped — ${isTimeout ? 'backend cold-starting (timeout)' : String(err)}`);
+    return { verdict: 'ERROR', explanation: 'Backend cold-starting.' };
   }
 }
 
@@ -730,7 +739,7 @@ async function scanAnomaly(partialVector, url, trigger) {
   fd.append('threat_type', 'anomaly');
   fd.append('content', JSON.stringify(partialVector));
   try {
-    const resp = await fetch(`${DEFAULT_BACKEND}/analyze`, {
+    const resp = await fetch(`${currentBackendUrl}/analyze`, {
       method: 'POST', body: fd,
       headers: _buildHeaders(token, { 'X-Anomaly-Trigger': trigger }),
       signal: AbortSignal.timeout(10000),
@@ -794,6 +803,90 @@ async function recordBlock(url) {
   h.unshift({ url: url.substring(0, 90), verdict: 'BLOCKED', risk_score: 100, ts: Date.now() });
   if (h.length > 50) h.length = 50;
   await chrome.storage.local.set({ siq_history: h });
+}
+
+// ── Email Scan Queue ────────────────────────────────────────────────────────
+const MAX_CONCURRENT_SCANS = 3;
+const MAX_QUEUE_DEPTH = 20;
+const _emailScanQueue = [];
+let _activeEmailScans = 0;
+
+function _processEmailQueue() {
+  if (_activeEmailScans >= MAX_CONCURRENT_SCANS || _emailScanQueue.length === 0) return;
+  _activeEmailScans++;
+  const task = _emailScanQueue.shift();
+  _executeEmailScanTask(task).finally(() => {
+    _activeEmailScans--;
+    _processEmailQueue();
+  });
+}
+
+function _executeEmailScanTask({ msg, tabId, sendResponse }) {
+  if (tabId) setBadge(tabId, 'SCANNING');
+
+  return Promise.all([
+    scanEmailUrls(msg.links || [])
+  ]).then(async ([urlScanObj]) => {
+    const urlResults = urlScanObj.results;
+    const scannedUrls = urlScanObj.scannedUrls;
+    const linkVerdictMap = urlScanObj.linkVerdictMap;
+
+    const senderResult = analyzeSender(msg.senderName, msg.senderEmail, msg.replyTo);
+    const attachmentResult = _scoreAttachments(msg.attachments || []);
+
+    const hasSuspiciousLinks = urlResults.some(r => r.verdict !== 'BENIGN' && r.verdict !== 'ERROR');
+    
+    const payload = {
+      bodyText: msg.bodyText,
+      sender_mismatch: senderResult.verdict !== 'BENIGN',
+      attachment_risk: attachmentResult.verdict === 'MALICIOUS' ? 1.0 : (attachmentResult.verdict === 'SUSPICIOUS' ? 0.6 : 0.0),
+      suspicious_links: hasSuspiciousLinks ? 0.8 : 0.0,
+    };
+
+    const finalResult = await scanEmail(payload);
+    const url = msg.url || 'gmail';
+    
+    const combinedResult = {
+      ...finalResult,
+      senderVerdict:    senderResult?.verdict,
+      attachmentVerdict: attachmentResult?.verdict,
+      urlResults,
+      scannedUrls,
+      links:            msg.links,
+      subject:          msg.subject,
+      senderEmail:      msg.senderEmail,
+      senderName:       msg.senderName,
+    };
+
+    const key = tabId ? `c_email_tab_${tabId}` : `c_email_${url}`;
+    await chrome.storage.local.set({ [key]: { d: combinedResult, ts: Date.now() } });
+
+    if (tabId) {
+      recordScan(url, finalResult);
+      setBadge(tabId, finalResult.verdict);
+    }
+
+    chrome.tabs.sendMessage(tabId, {
+      type:          'EMAIL_SCAN_RESULT',
+      scanId:        msg.scanId,
+      verdict:       finalResult.verdict,
+      confidence:    finalResult.confidence,
+      bodyVerdict:   finalResult?.verdict,
+      senderVerdict: senderResult?.verdict,
+      urlResults,
+      links:         msg.links,
+      linkVerdictMap: Array.from(linkVerdictMap.entries()),
+      shap_features: finalResult.shap_features,
+      explanation:   finalResult.explanation,
+      action:        finalResult.action,
+    }).catch(() => {});
+
+    safeSendMessage({ type: 'EMAIL_RESULT', result: finalResult, url });
+    sendResponse({ result: finalResult });
+  }).catch(err => {
+    console.error("[SCAN_EMAIL_FULL] Unhandled Pipeline Error:", err);
+    sendResponse({ result: { verdict: 'ERROR', risk_score: 0, explanation: 'Scan pipeline error: ' + String(err), shap_features: [] } });
+  });
 }
 
 // ── Message Router ────────────────────────────────────────────────────────────
@@ -883,10 +976,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             ? scanContent(msg.content, msg.semanticDivergence)
             : Promise.resolve(null),
         ]).then(async ([urlResult, contentResult]) => {
-          // If the URL scan errored (backend cold-starting), do NOT block.
+          console.log('[SCAN_PAGE] content length:', msg.content?.length);
+          console.log('[SCAN_PAGE] content snippet:', msg.content?.substring(0, 200));
+          console.log('[SCAN_PAGE] urlResult:', urlResult.verdict);
+          console.log('[SCAN_PAGE] contentResult:', contentResult?.verdict, contentResult?.confidence);
+
+          // If the URL scan or content scan errored (backend cold-starting), do NOT block.
           // Schedule an auto-retry in 15 s — enough for Render to wake up.
           // The alarm name encodes the tabId so multiple tabs don't collide.
-          if (urlResult.verdict === 'ERROR') {
+          if (urlResult.verdict === 'ERROR' || contentResult?.verdict === 'ERROR') {
             if (tabId) setBadge(tabId, 'ERROR');
             const r = {
               ...urlResult,
@@ -900,7 +998,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (tabId && msg.url) {
               const alarmName = `retry_scan_${tabId}`;
               chrome.storage.local.set({
-                [`retry_${tabId}`]: { url: msg.url, tabId },
+                [`retry_${tabId}`]: { 
+                  url: msg.url, 
+                  tabId, 
+                  attempt: 1,
+                  content: msg.content,
+                  hasPasswordForm: msg.hasPasswordForm,
+                  semanticDivergence: msg.semanticDivergence
+                },
               });
               chrome.alarms.create(alarmName, { delayInMinutes: 0.25 }); // ~15 s
             }
@@ -909,7 +1014,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
 
           const finalResult = mergeResults(urlResult, contentResult, hasPasswordForm);
-          setCache(msg.url, finalResult);
+          await setCache(msg.url, finalResult);
 
           if (tabId) {
             recordScan(msg.url, finalResult);
@@ -918,7 +1023,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (
               finalResult.verdict === 'MALICIOUS' &&
               (finalResult.risk_score || 0) >= 70 &&
-              !isLocal(msg.url)
+              !isPrivateIpOrLocalhost(msg.url)
             ) {
               // Last-chance sync check: catches any in-flight whitelist added
               // during the scan window (e.g. user double-clicks Proceed).
@@ -983,75 +1088,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'SCAN_EMAIL_FULL') {
-    if (tabId) setBadge(tabId, 'SCANNING');
-
-    Promise.all([
-      scanEmailUrls(msg.links || [])
-    ]).then(async ([urlScanObj]) => {
-      const urlResults = urlScanObj.results;
-      const scannedUrls = urlScanObj.scannedUrls;
-      const linkVerdictMap = urlScanObj.linkVerdictMap;
-
-      const senderResult = analyzeSender(msg.senderName, msg.senderEmail, msg.replyTo);
-      const attachmentResult = _scoreAttachments(msg.attachments || []);
-
-      // Translate frontend heuristic results into the backend vector format
-      const hasSuspiciousLinks = urlResults.some(r => r.verdict !== 'BENIGN' && r.verdict !== 'ERROR');
-      
-      const payload = {
-        bodyText: msg.bodyText,
-        sender_mismatch: senderResult.verdict !== 'BENIGN',
-        attachment_risk: attachmentResult.verdict === 'MALICIOUS' ? 1.0 : (attachmentResult.verdict === 'SUSPICIOUS' ? 0.6 : 0.0),
-        suspicious_links: hasSuspiciousLinks ? 0.8 : 0.0,
-      };
-
-      const finalResult = await scanEmail(payload);
-
-      const url = msg.url || 'gmail';
-      
-      const combinedResult = {
-        ...finalResult,
-        senderVerdict:    senderResult?.verdict,
-        attachmentVerdict: attachmentResult?.verdict,
-        urlResults,
-        scannedUrls,
-        links:            msg.links,
-        subject:          msg.subject,
-        senderEmail:      msg.senderEmail,
-        senderName:       msg.senderName,
-      };
-
-      const key = tabId ? `c_email_tab_${tabId}` : `c_email_${url}`;
-      await chrome.storage.local.set({ [key]: { d: combinedResult, ts: Date.now() } });
-
-      if (tabId) {
-        recordScan(url, finalResult);
-        setBadge(tabId, finalResult.verdict);
-      }
-
-      chrome.tabs.sendMessage(tabId, {
-        type:          'EMAIL_SCAN_RESULT',
-        verdict:       finalResult.verdict,
-        confidence:    finalResult.confidence,
-        bodyVerdict:   bodyResult?.verdict,
-        senderVerdict: senderResult?.verdict,
-        urlResults,
-        links:         msg.links,
-        linkVerdictMap: Array.from(linkVerdictMap.entries()),
-        shap_features: finalResult.shap_features,
-        explanation:   finalResult.explanation,
-        action:        finalResult.action,
-      }).catch(() => {});
-
-      safeSendMessage({
-        type:   'EMAIL_RESULT',
-        result: finalResult,
-        url,
-      });
-
-      sendResponse({ result: finalResult });
-    });
-    return true;
+    if (_emailScanQueue.length >= MAX_QUEUE_DEPTH) {
+      _emailScanQueue.shift(); // Drop oldest to prevent unbounded queue growth
+    }
+    _emailScanQueue.push({ msg, tabId, sendResponse });
+    _processEmailQueue();
+    return true; // Keep channel open for async response
   }
 
   if (msg.type === 'EMAIL_SCANNING') {
@@ -1184,46 +1226,67 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     const key   = `retry_${tabId}`;
     const store = await chrome.storage.local.get(key);
     const ctx   = store[key];
-    await chrome.storage.local.remove(key); // clean up regardless
 
-    if (!ctx?.url || !tabId) return;
+    if (!ctx?.url || !tabId) {
+      await chrome.storage.local.remove(key);
+      return;
+    }
 
     // Verify the tab still exists and is on the same URL
     let tab;
     try { tab = await chrome.tabs.get(tabId); } catch { return; }
-    if (!tab || _normalizeUrl(tab.url) !== _normalizeUrl(ctx.url)) return;
-
-    setBadge(tabId, 'SCANNING');
-    const result = await scanUrl(ctx.url);
-
-    if (result.verdict === 'ERROR') {
-      // Backend still cold — just show ERROR badge, don't retry again
-      setBadge(tabId, 'ERROR');
+    if (!tab || _normalizeUrl(tab.url) !== _normalizeUrl(ctx.url)) {
+      await chrome.storage.local.remove(key);
       return;
     }
 
-    // Backend is warm now — update badge, cache, notify popup
-    setCache(ctx.url, result);
-    recordScan(ctx.url, result);
-    setBadge(tabId, result.verdict);
-    safeSendMessage({ type: 'PAGE_RESULT', result, url: ctx.url });
+    setBadge(tabId, 'SCANNING');
+    
+    // Rerun both engines just like SCAN_PAGE
+    const [urlResult, contentResult] = await Promise.all([
+      scanUrl(ctx.url),
+      ctx.content ? scanContent(ctx.content, ctx.semanticDivergence) : Promise.resolve(null)
+    ]);
 
-    // If result is now MALICIOUS and URL is not whitelisted — block
+    if (urlResult.verdict === 'ERROR' || contentResult?.verdict === 'ERROR') {
+      const attempt = ctx.attempt || 1;
+      if (attempt < 3) {
+        const nextAttempt = attempt + 1;
+        await chrome.storage.local.set({
+          [key]: { ...ctx, attempt: nextAttempt },
+        });
+        chrome.alarms.create(`retry_scan_${tabId}`, { delayInMinutes: nextAttempt * 0.25 });
+        return;
+      }
+
+      setBadge(tabId, 'ERROR');
+      await chrome.storage.local.remove(key);
+      urlResult.explanation = 'Scan failed after multiple attempts. Backend is offline.';
+      safeSendMessage({ type: 'PAGE_RESULT', result: urlResult, url: ctx.url });
+      return;
+    }
+
+    const finalResult = mergeResults(urlResult, contentResult, ctx.hasPasswordForm);
+
+    await chrome.storage.local.remove(key);
+    setCache(ctx.url, finalResult);
+    recordScan(ctx.url, finalResult);
+    setBadge(tabId, finalResult.verdict);
+    safeSendMessage({ type: 'PAGE_RESULT', result: finalResult, url: ctx.url });
+
     if (
-      result.verdict === 'MALICIOUS' &&
-      (result.risk_score || 0) >= 70 &&
-      !isLocal(ctx.url) &&
+      finalResult.verdict === 'MALICIOUS' &&
+      (finalResult.risk_score || 0) >= 70 &&
+      !isPrivateIpOrLocalhost(ctx.url) &&
       !_whitelistHasSync(ctx.url)
     ) {
       const params = new URLSearchParams({
         url:         ctx.url,
-        verdict:     result.verdict,
-        risk:        String(result.risk_score || 0),
-        explanation: result.explanation || 'Malicious URL detected.',
-        action:      result.action     || 'Do not proceed to this site.',
-        signals:     JSON.stringify(
-          (result.shap_features || []).slice(0, 3).map(f => f.feature)
-        ),
+        verdict:     finalResult.verdict,
+        risk:        String(finalResult.risk_score || 0),
+        explanation: finalResult.explanation || 'Malicious content detected.',
+        action:      finalResult.action     || 'Do not proceed to this site.',
+        signals:     JSON.stringify((finalResult.shap_features || []).slice(0, 3).map(f => f.feature)),
       });
       chrome.tabs.update(tabId, { url: `${BLOCKED_PAGE}?${params.toString()}` });
     }

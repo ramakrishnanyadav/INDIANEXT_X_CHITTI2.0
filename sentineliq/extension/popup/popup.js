@@ -20,8 +20,18 @@ function safeCacheKey(url) {
   return `c_${url.substring(0, 400)}`;
 }
 
+function _normalizeUrl(url) {
+  try {
+    return decodeURIComponent(url.split('#')[0].split('?')[0])
+      .toLowerCase()
+      .replace(/\/+$/, '');
+  } catch { return url.toLowerCase(); }
+}
+
 async function getCachedFromPopup(url) {
-  const key = safeCacheKey(url);
+  const norm = _normalizeUrl(url);
+  // Matches background.js safeCacheKey('c_', url) which just does prefix + url
+  const key = `c_${norm}`;
   const res = await chrome.storage.local.get(key);
   return res[key] ? res[key].d : null;
 }
@@ -149,14 +159,42 @@ async function scanActiveTab() {
     return;
   }
 
-  const isEmailClient = tab.url.includes('mail.google.com') || tab.url.includes('outlook.live.com') || tab.url.includes('outlook.office.com') || tab.url.includes('outlook.cloud.microsoft');
+  const isEmailClient = tab.url.includes('mail.google.com') || tab.url.includes('outlook.live.com') || tab.url.includes('outlook.office.com') || tab.url.includes('outlook.cloud.microsoft') || tab.url.includes('mail.yahoo.com');
   
   if (isEmailClient) {
+    const isListView = tab.url.endsWith('#inbox') || tab.url.includes('#category/') || tab.url.endsWith('#starred') || tab.url.endsWith('#snoozed') || tab.url.endsWith('#sent') || tab.url.endsWith('#drafts') || tab.url.endsWith('#all') || tab.url.endsWith('#spam') || tab.url.endsWith('#trash') || (tab.url.includes('outlook') && !tab.url.includes('/id/')) || (tab.url.includes('yahoo') && !tab.url.includes('/messages/'));
+
+    if (isListView) {
+      renderResult({
+        verdict: 'PENDING',
+        risk_score: 0,
+        explanation: 'SentinelIQ is monitoring your inbox. Please open an email to run a deep content scan.',
+        action: 'No email currently opened.',
+        shap_features: []
+      }, tab.url);
+      const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
+      engines.forEach(e => updateEngineRow(e, null)); // Sets them to PENDING
+      return;
+    }
+
+    // First, try to get the result from the actual visible banner in the DOM
+    // This perfectly solves race conditions if multiple emails are in the same tab.
+    try {
+      const bannerResp = await chrome.tabs.sendMessage(tab.id, { type: 'GET_VISIBLE_BANNER_RESULT' });
+      if (bannerResp && bannerResp.result) {
+        renderResult(bannerResp.result, tab.url);
+        const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
+        engines.forEach(e => updateEngineRow(e, bannerResp.result));
+        return;
+      }
+    } catch (e) {
+      // Content script not ready or no banner visible, fall through to cache
+    }
+
     const key = `c_email_tab_${tab.id}`;
     const res = await chrome.storage.local.get(key);
-    if (res[key]) {
+    if (res[key] && res[key].d) {
       renderResult(res[key].d, tab.url);
-      _renderEmailDetail(res[key].d);
       
       const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
       engines.forEach(e => updateEngineRow(e, res[key].d));
@@ -200,8 +238,8 @@ async function refreshMainRing(url) {
   const cached = await getCachedFromPopup(url);
   
   if (!cached || !cached.verdict) {
-    const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
-    engines.forEach(e => updateEngineRow(e, null));
+    // DO NOT wipe engines to PENDING here. 
+    // They are either already PENDING from HTML init, or they have live data.
     return;
   }
 
@@ -352,7 +390,7 @@ $('#btn-save-settings').addEventListener('click', () => {
 });
 
 $('#btn-test-backend').addEventListener('click', async () => {
-  const url = ($('#input-backend').value.trim() || 'https://indianext-x-chitti2-0.onrender.com/api/v1').replace(/\/$/, '');
+  const url = ($('#input-backend').value.trim() || 'http://127.0.0.1:8000/api/v1').replace(/\/$/, '');
   const status = $('#test-status');
   status.textContent = 'Testing…';
   status.className = 'test-status';
@@ -420,9 +458,11 @@ function _renderEmailDetail(result) {
 chrome.runtime.onMessage.addListener(msg => {
   if (msg.type === 'PAGE_RESULT') {
     renderResult(msg.result, msg.url);
-    refreshMainRing(msg.url);
+    const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
+    engines.forEach(e => updateEngineRow(e, msg.result));
+    // refreshMainRing removed to prevent cache mismatch from overwriting live results
   }
-  if (msg.type === 'EMAIL_SCAN_RESULT') {
+  if (msg.type === 'EMAIL_RESULT') {
     renderResult(msg.result, msg.url);
     const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
     engines.forEach(e => updateEngineRow(e, msg.result));

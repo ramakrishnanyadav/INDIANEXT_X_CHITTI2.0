@@ -439,31 +439,35 @@ function extractPageContent() {
   return { content, hasPasswordForm: hasPasswd, semanticDivergence };
 }
 
-// Initial pass — fires at document_idle
-const _initial = extractPageContent();
-chrome.runtime.sendMessage({
-  type: 'SCAN_PAGE',
-  url: location.href,
-  content: _initial.content,
-  hasPasswordForm: _initial.hasPasswordForm,
-  semanticDivergence: _initial.semanticDivergence
-});
+const isEmailClientPage = location.hostname.includes('mail.google.com') || location.hostname.includes('outlook.live') || location.hostname.includes('outlook.office') || location.hostname.includes('outlook.cloud.microsoft') || location.hostname.includes('mail.yahoo.com');
 
-// Fix #2: Delayed second pass — catches dynamically injected content (SPA, JS-rendered forms)
-setTimeout(() => {
-  const _delayed = extractPageContent();
-  const grew     = _delayed.content.length > _initial.content.length + 80;
-  const newForm  = _delayed.hasPasswordForm && !_initial.hasPasswordForm;
-  if (grew || newForm) {
-    chrome.runtime.sendMessage({
-      type: 'SCAN_PAGE',
-      url: location.href,
-      content: _delayed.content,
-      hasPasswordForm: _delayed.hasPasswordForm,
-      semanticDivergence: _delayed.semanticDivergence
-    });
-  }
-}, 1500);
+if (!isEmailClientPage) {
+  // Initial pass — fires at document_idle
+  const _initial = extractPageContent();
+  chrome.runtime.sendMessage({
+    type: 'SCAN_PAGE',
+    url: location.href,
+    content: _initial.content,
+    hasPasswordForm: _initial.hasPasswordForm,
+    semanticDivergence: _initial.semanticDivergence
+  });
+
+  // Fix #2: Delayed second pass — catches dynamically injected content (SPA, JS-rendered forms)
+  setTimeout(() => {
+    const _delayed = extractPageContent();
+    const grew     = _delayed.content.length > _initial.content.length + 80;
+    const newForm  = _delayed.hasPasswordForm && !_initial.hasPasswordForm;
+    if (grew || newForm) {
+      chrome.runtime.sendMessage({
+        type: 'SCAN_PAGE',
+        url: location.href,
+        content: _delayed.content,
+        hasPasswordForm: _delayed.hasPasswordForm,
+        semanticDivergence: _delayed.semanticDivergence
+      });
+    }
+  }, 1500);
+}
 
 // Watch for password inputs dynamically added (SPA-friendly)
 warnIfPasswordPage();
@@ -500,239 +504,7 @@ function attachInjectionMonitor() {
 attachInjectionMonitor();
 new MutationObserver(attachInjectionMonitor).observe(document.body || document.documentElement, { childList: true, subtree: true });
 
-// ── Email Extraction (Universal Webmail) ──────────────────────────────────────
-let emailWarned = new Set(); // thread IDs
 
-function extractEmailVector() {
-  // 1. Two-Step Webmail Confirmation (Require 2+ structural signals)
-  const signals = {
-    reply: /(reply|respond)/i.test(document.body.innerText) || !!document.querySelector('div[aria-label*="Reply"], button[aria-label*="Reply"]'),
-    forward: /forward/i.test(document.body.innerText) || !!document.querySelector('div[aria-label*="Forward"], button[aria-label*="Forward"]'),
-    header: !!document.querySelector('.gE, .y2, .bA4, .msg-header, .message-header, [role="heading"]'),
-    subject: !!document.querySelector('h2, h3, .hP, .subject'),
-    timestamp: /\b(\d{1,2}:\d{2}\s*(AM|PM)|(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2})\b/i.test(document.body.innerText)
-  };
-  
-  const signalCount = Object.values(signals).filter(Boolean).length;
-  if (signalCount < 2) return null; // Not enough evidence this is a webmail interface
-
-  let extractionConfidence = 'low';
-  let activeEmail = null;
-
-  // 2. Identify Email Body
-  if (location.hostname.includes('mail.google.com')) {
-    activeEmail = document.querySelector('.a3s.aiL');
-    if (activeEmail) extractionConfidence = 'high';
-  } else if (location.hostname.includes('outlook.live') || location.hostname.includes('outlook.office')) {
-    activeEmail = document.querySelector('[aria-label="Message body"], .BodyFragment');
-    if (activeEmail) extractionConfidence = 'high';
-  } else if (location.hostname.includes('mail.yahoo.com')) {
-    activeEmail = document.querySelector('.msg-body');
-    if (activeEmail) extractionConfidence = 'high';
-  }
-
-  // Fallback heuristic body extraction for unknown/enterprise webmails
-  if (!activeEmail) {
-    const potentialBodies = Array.from(document.querySelectorAll('div, iframe, section')).filter(el => {
-      const text = el.innerText || '';
-      return text.length > 50 && (
-        (typeof el.className === 'string' && (el.className.toLowerCase().includes('message') || el.className.toLowerCase().includes('body'))) ||
-        el.getAttribute('role') === 'main'
-      );
-    });
-    if (potentialBodies.length) {
-      activeEmail = potentialBodies[0];
-      extractionConfidence = 'medium';
-    } else {
-      activeEmail = document.body;
-      extractionConfidence = 'low';
-    }
-  }
-
-  if (!activeEmail) return null;
-
-  const threadId = location.pathname + location.search + location.hash;
-  if (emailWarned.has(threadId)) return null;
-
-  // 3. Sender Extraction (Scoped regex on top 15% of the body)
-  let senderEmail = '';
-  let senderName = '';
-  
-  const header = activeEmail.closest('table')?.parentElement?.previousElementSibling || document;
-  const gmailSender = header.querySelector('span[email]');
-  
-  if (gmailSender) {
-    senderEmail = gmailSender.getAttribute('email') || '';
-    senderName = gmailSender.textContent || '';
-  } else {
-    // Limit search to the top 15% to avoid matching reply chains/signatures
-    const fullText = activeEmail.innerText || '';
-    const sliceLen = Math.max(150, Math.floor(fullText.length * 0.15));
-    const topText = fullText.substring(0, sliceLen);
-    
-    const emailRegex = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/;
-    const match = topText.match(emailRegex);
-    if (match) {
-      senderEmail = match[0];
-      senderName = senderEmail.split('@')[0];
-    }
-  }
-  
-  const text = activeEmail.innerText || '';
-  
-  // 4. Feature Extraction
-  const urgencyPatterns = /(urgent|immediately|action required|suspended|locked|verify|expires|within 24 hours|final notice|act now)/i;
-  const urgency_score = (text.match(new RegExp(urgencyPatterns, 'gi')) || []).length * 0.3;
-
-  const sender_mismatch = senderName.length > 0 && senderName !== senderEmail && senderName.includes('@');
-  
-  const links = Array.from(activeEmail.querySelectorAll('a[href]'));
-  const link_count_anomaly = links.length > 15 ? 1.0 : 0.0;
-  
-  const suspicious_links = links.some(a => /http:\/\/\d|\.tk|\.xyz|bit\.ly/.test(a.href)) ? 1.0 : 0.0;
-  const homoglyph_detected = /[\u0400-\u04FF\u0100-\u017F]/.test(senderName) ? 1.0 : 0.0;
-
-  const attachmentRiskRegex = /\.(zip|iso|scr|html|htm|docm|xlsm|exe|js|vbs|lnk)$/i;
-  const attachmentNodes = document.querySelectorAll('.aV3, .vY, span[download_url]');
-  let attachment_risk = 0.0;
-  attachmentNodes.forEach(node => {
-    if (attachmentRiskRegex.test(node.textContent || node.getAttribute('download_url') || '')) {
-      attachment_risk = 1.0;
-    }
-  });
-
-  if (attachment_risk === 0.0) {
-    if (attachmentRiskRegex.test(document.body.innerText)) attachment_risk = 0.5;
-  }
-
-  return {
-    threadId,
-    vector: {
-      urgency_score: Math.min(1.0, urgency_score),
-      sender_mismatch,
-      link_count_anomaly,
-      suspicious_links,
-      homoglyph_detected,
-      attachment_risk,
-      readability_score: 0.5,
-      extraction_confidence: extractionConfidence
-    }
-  };
-}
-
-function checkEmailThreat() {
-  const data = extractEmailVector();
-  if (!data) return;
-  emailWarned.add(data.threadId);
-
-  chrome.runtime.sendMessage({ type: 'SCAN_EMAIL', vector: data.vector }, resp => {
-    const r = resp?.result;
-    if (!r || r.verdict === 'BENIGN' || r.verdict === 'ERROR') return;
-    showEmailBanner(r);
-  });
-}
-
-// ── Email 3-level escalation ──────────────────────────────────────────────────
-// Level 1 (SUSPICIOUS, conf < 0.55): colored border frame around email body
-// Level 2 (SUSPICIOUS, conf >= 0.55): frosted overlay + centered dismissible card
-// Level 3 (MALICIOUS): full replacement — email hidden, warning card + inline link badges
-function showEmailBanner(result) {
-  if (document.querySelector('[data-siq-email-banner]')) return;
-  const v    = result.verdict || 'SUSPICIOUS';
-  const conf = result.confidence || 0;
-  const score = result.risk_score || 0;
-  const emailBody = document.querySelector('.a3s.aiL');
-  if (!emailBody) return;
-
-  // Inject inline risk badges on ALL links inside the email (every verdict)
-  emailBody.querySelectorAll('a[href]').forEach(a => {
-    const url = absUrl(a.href);
-    if (!url || /^(mailto|#)/.test(a.href)) return;
-    // Pre-scan the link silently and inject badge when done
-    scanUrl(url).then(r => injectBadge(a, r.verdict, r.risk_score || 0, true));
-  });
-
-  if (v === 'MALICIOUS') {
-    // Level 3: hide email body, show full warning card
-    emailBody.style.cssText += ';filter:blur(8px);pointer-events:none;user-select:none;';
-    const card = document.createElement('div');
-    card.setAttribute('data-siq-email-banner', '3');
-    card.style.cssText = `
-      position:relative;z-index:9999;
-      background:linear-gradient(135deg,#0f0a0a,#1c0505);
-      border:2px solid #ef4444;border-radius:16px;
-      padding:28px 24px;margin:12px 16px;
-      font-family:-apple-system,system-ui,sans-serif;color:#fff;
-    `;
-    card.innerHTML = `
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-        <span style="font-size:32px">🛡️</span>
-        <div>
-          <div style="font-size:10px;font-weight:900;color:#ef4444;text-transform:uppercase;letter-spacing:0.15em">SentinelIQ Enterprise</div>
-          <div style="font-size:18px;font-weight:900;color:#fca5a5;margin-top:2px">MALICIOUS EMAIL BLOCKED</div>
-        </div>
-        <span style="margin-left:auto;background:#ef44441a;color:#ef4444;border:1px solid #ef44443a;border-radius:99px;padding:4px 14px;font-size:12px;font-weight:900">Risk ${score}/100</span>
-      </div>
-      <p style="font-size:13px;color:#fca5a5;line-height:1.6;margin:0 0 16px">${result.explanation || 'This email contains malicious signals.'}</p>
-      <p style="font-size:11px;color:#818cf8;font-style:italic;margin:0 0 18px">${result.action || 'Delete this email and report it to your IT security team.'}</p>
-      <div style="display:flex;gap:10px">
-        <button onclick="this.closest('[data-siq-email-banner]').previousElementSibling && (this.closest('[data-siq-email-banner]').remove());document.querySelector('.a3s.aiL').style.cssText='';" style="
-          flex:1;padding:10px;background:#ef4444;color:#fff;border:none;border-radius:10px;
-          font-size:12px;font-weight:800;cursor:pointer;letter-spacing:0.05em
-        ">REVEAL EMAIL (PROCEED AT OWN RISK)</button>
-        <button onclick="history.back()" style="
-          padding:10px 18px;background:#1e293b;color:#94a3b8;border:1px solid #334155;
-          border-radius:10px;font-size:12px;font-weight:700;cursor:pointer
-        ">← Go Back</button>
-      </div>
-    `;
-    emailBody.parentElement.insertBefore(card, emailBody);
-
-  } else if (conf >= 0.55) {
-    // Level 2: frosted overlay + centered dismissible card
-    const wrap = emailBody.parentElement;
-    wrap.style.position = 'relative';
-    const overlay = document.createElement('div');
-    overlay.setAttribute('data-siq-email-banner', '2');
-    overlay.style.cssText = `
-      position:absolute;inset:0;z-index:9998;
-      background:rgba(120,35,15,0.82);backdrop-filter:blur(6px);
-      display:flex;align-items:center;justify-content:center;border-radius:8px;
-    `;
-    overlay.innerHTML = `
-      <div style="background:#1c0505;border:1px solid #ef4444;border-radius:14px;padding:24px;max-width:420px;text-align:center;font-family:-apple-system,system-ui,sans-serif">
-        <div style="font-size:28px;margin-bottom:10px">⚠️</div>
-        <div style="font-size:13px;font-weight:900;color:#fca5a5;margin-bottom:8px">HIGH RISK EMAIL DETECTED</div>
-        <div style="font-size:12px;color:#fbd5d5;line-height:1.5;margin-bottom:16px">${result.explanation || 'High risk signals detected.'}</div>
-        <button onclick="this.closest('[data-siq-email-banner]').remove()" style="
-          background:#ef4444;color:#fff;border:none;border-radius:8px;
-          padding:9px 20px;font-size:12px;font-weight:800;cursor:pointer
-        ">I UNDERSTAND — SHOW EMAIL</button>
-      </div>
-    `;
-    wrap.appendChild(overlay);
-
-  } else {
-    // Level 1: persistent colored border frame — cannot be dismissed
-    emailBody.style.outline = '3px solid #f59e0b';
-    emailBody.style.outlineOffset = '4px';
-    const strip = document.createElement('div');
-    strip.setAttribute('data-siq-email-banner', '1');
-    strip.style.cssText = `
-      padding:7px 14px;background:#78350f;border-radius:6px;margin:8px 0;
-      font-family:-apple-system,system-ui,sans-serif;display:flex;align-items:center;gap:10px;
-    `;
-    strip.innerHTML = `
-      <span>⚠️</span>
-      <span style="font-size:12px;color:#fef3c7;font-weight:700">SentinelIQ: Suspicious email (Risk ${score}/100) — verify sender before clicking any links</span>
-    `;
-    emailBody.parentElement.insertBefore(strip, emailBody);
-  }
-}
-
-setTimeout(checkEmailThreat, 2000);
-const readingPane = document.querySelector('.a3s.aiL') || document.body;
-new MutationObserver(debounce(checkEmailThreat, 1000)).observe(readingPane, { childList: true, subtree: true });
 
 // ── v3.0: Prompt Injection Monitor ───────────────────────────────────────────
 // Monitors text inputs (excluding password fields — S8) with an 800ms debounce.
