@@ -212,21 +212,18 @@ async def detect_injection(
         la = _layer_a(context_text)
         layer_a_score: float = float(la["score"])
 
-        # Layer B: run when uncertain OR to cross-check high-confidence hits
-        layer_b_score: float = 0.0
-        layer_b_reason: str = ""
-        # Layer B run condition:
-        # - score < 0.75: uncertain — LLM used to confirm or deny
-        # - score >= 0.85: very high confidence — LLM cross-checks to prevent false positives
-        # - 0.75 <= score < 0.85: high-confidence band deliberately skipped for performance.
-        #   These are strong regex hits that don't need cross-validation to be actionable.
-        run_b = layer_a_score < 0.75 or layer_a_score >= 0.85
+        # Layer B: LLM validation. Use regex only for candidate generation.
+        # Let LLM validation decide final verdict to prevent false positives on benign AI prompts.
+        run_b = layer_a_score > 0.0 and getattr(app_state, "gemini_available", False)
         if run_b:
             lb = await _layer_b_gemini(context_text, app_state)
             layer_b_score  = float(lb["confidence"])
             layer_b_reason = str(lb.get("reason", ""))
-
-        combined: float = max(layer_a_score, layer_b_score)
+            
+            # LLM decides final verdict
+            combined = layer_b_score
+        else:
+            combined = layer_a_score
 
         # Platt calibration
         try:

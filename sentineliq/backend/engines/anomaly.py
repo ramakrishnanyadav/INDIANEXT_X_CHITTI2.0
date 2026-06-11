@@ -188,11 +188,17 @@ async def load_anomaly_model(app: Any) -> None:
             for role in _ROLES:
                 joblib_path = os.path.normpath(JOBLIB_PATH_TEMPLATE.format(role=role))
 
-                # Always retrain to pick up new feature columns
+                # Use cached model if available to speed up startup
                 if os.path.exists(joblib_path):
                     try:
-                        os.remove(joblib_path)
-                    except Exception:
+                        clf = joblib.load(joblib_path)
+                        baseline = _load_or_generate_baseline(role)
+                        means = _compute_baseline_means(baseline)
+                        models[role] = clf
+                        baseline_means[role] = means
+                        continue
+                    except Exception as e:
+                        logger.warning("Failed to load cached anomaly model for %s: %s. Retraining.", role, e)
                         pass
 
                 baseline = _load_or_generate_baseline(role)

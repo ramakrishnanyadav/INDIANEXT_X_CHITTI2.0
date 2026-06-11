@@ -173,7 +173,7 @@ async def _parse_session(file: Optional[UploadFile], content: str) -> Dict[str, 
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# File content heuristic scanner (used for PDF/TXT/EML anomaly analysis)
+# Heuristic Document Threat Scanner (used for PDF/TXT/EML anomaly analysis)
 # ─────────────────────────────────────────────────────────────────────────────
 _MALWARE_PATTERNS = [
     # PDF exploit / JavaScript injection
@@ -212,7 +212,7 @@ _MALWARE_PATTERNS = [
 
 async def _analyze_file_content(file_bytes: bytes, fname: str, text: str, app_state: Any) -> Dict[str, Any]:
     """
-    Heuristic + Gemini scanner for file uploads (PDF, TXT, EML, etc.).
+    Heuristic Document Threat Scanner + LLM cross-check for file uploads (PDF, TXT, EML, etc.).
     Returns a result dict compatible with detect_anomaly output format.
     """
     import re as _re
@@ -231,7 +231,7 @@ async def _analyze_file_content(file_bytes: bytes, fname: str, text: str, app_st
         matches.append({"feature": "embedded PE executable", "weight": 0.98, "direction": "positive"})
         max_score = max(max_score, 0.98)
 
-    # Gemini AI cross-check for certainty
+    # LLM cross-check for certainty
     gemini_score = 0.0
     if getattr(app_state, "gemini_available", False) and getattr(app_state, "gemini_client", None):
         try:
@@ -239,7 +239,7 @@ async def _analyze_file_content(file_bytes: bytes, fname: str, text: str, app_st
             snippet = "".join(list(islice(iter(text), 1500)))
             client = app_state.gemini_client
             prompt = (
-                f"You are a malware analyst. Analyse this document content for malicious indicators.\n"
+                f"You are a threat analyst. Analyse this document content for malicious indicators.\n"
                 f"File: {fname}\nContent preview:\n{snippet}\n\n"
                 "Respond ONLY with valid JSON: {\"verdict\":\"MALICIOUS\",\"confidence\":0.95,\"reason\":\"...\"}\n"
                 "Use MALICIOUS, SUSPICIOUS, or BENIGN as verdict."
