@@ -49,6 +49,11 @@ def ensemble_vote(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         conf = float(r.get("confidence", 0.0))
         weight = float(ENGINE_WEIGHTS.get(engine, 0.25))
 
+        # Weighted Confidence Doesn't Respect Verdict fix:
+        # A 0.95 BENIGN shouldn't contribute strongly to a MALICIOUS ensemble score.
+        if verdict == "BENIGN":
+            conf *= 0.25
+
         weighted_conf += conf * weight
         total_weight += weight
 
@@ -57,6 +62,8 @@ def ensemble_vote(results: List[Dict[str, Any]]) -> Dict[str, Any]:
             engines_fired.append(engine)
         elif verdict in ("SUSPICIOUS", "MALICIOUS") and conf >= 0.25:
             suspicious_votes += 1 # type: ignore[operator]
+            if verdict == "MALICIOUS":
+                engines_fired.append(engine)
 
     # Normalise weighted confidence
     normalised_conf = float(round(weighted_conf / total_weight, 4)) if total_weight > 0 else 0.0 # type: ignore[call-overload]
@@ -68,6 +75,9 @@ def ensemble_vote(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     elif malicious_votes >= 2:
         escalation_bonus = 15   # 2 engines agree — strong signal
         cross_verdict = "MALICIOUS"
+        # Narrow cross-engine escalation fix: URL + Phishing is critical
+        if "url" in engines_fired and "phishing" in engines_fired:
+            escalation_bonus += 10 # Extra penalty for credential harvest
     elif malicious_votes == 1 and suspicious_votes >= 1:
         escalation_bonus = 8    # one MALICIOUS + one SUSPICIOUS = elevate
         cross_verdict = "SUSPICIOUS"
@@ -87,25 +97,33 @@ def ensemble_vote(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         "engines_fired":       engines_fired,
     }
 
-def cross_engine_escalate(phishing_result: Dict[str, Any], injection_result: Dict[str, Any]) -> float:
+def cross_engine_escalate(results: List[Dict[str, Any]]) -> float:
     """
-    If phishing AND injection both flag the same input,
-    the attacker is using social engineering + technical bypass together.
-    This is almost never a false positive.
+    Generalised cross-engine escalation.
+    If multiple engines (e.g. url + phishing) both flag the input,
+    escalate the confidence.
     """
-    phish_conf  = float(phishing_result.get("confidence", 0))
-    inject_conf = float(injection_result.get("confidence", 0))
+    highest_conf = 0.0
+    malicious_count = 0
+    suspicious_count = 0
 
-    phish_malicious  = phishing_result.get("verdict")  == "MALICIOUS"
-    inject_malicious = injection_result.get("verdict") == "MALICIOUS"
+    for r in results:
+        conf = float(r.get("confidence", 0))
+        verdict = str(r.get("verdict", "BENIGN")).upper()
+        
+        highest_conf = max(highest_conf, conf)
+        if verdict == "MALICIOUS":
+            malicious_count += 1
+        elif verdict == "SUSPICIOUS":
+            suspicious_count += 1
 
-    if phish_malicious and inject_malicious:
-        # Both engines agree — very high confidence
-        combined = max(phish_conf, inject_conf) + 0.15
+    if malicious_count >= 2:
+        # Multiple engines agree — very high confidence
+        combined = highest_conf + 0.15
         return min(1.0, combined)
 
-    if phish_malicious and inject_conf > 0.35:
-        # Phishing confirmed, injection suspicious
-        return min(1.0, phish_conf + 0.08)
+    if malicious_count == 1 and suspicious_count >= 1:
+        # One malicious, one suspicious
+        return min(1.0, highest_conf + 0.08)
 
-    return phish_conf  # no escalation
+    return highest_conf  # no escalation
