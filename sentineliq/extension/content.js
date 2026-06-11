@@ -311,21 +311,22 @@ if (isLoginPage()) {
 // ── Structured Semantic Divergence Engine v2 ─────────────────────────────────
 function detectSemanticDivergence() {
   const signals = [];
-  let maxScore = 0.0;
+  let totalScore = 0.0;
   const bodyEl = document.body || document.documentElement;
 
   const WEIGHTS = {
-    zero_width_fragmentation: 0.35,
-    aria_hidden_mismatch: 0.75,
     invisible_clickable_overlay: 0.95,
-    offscreen_legitimacy_text: 0.85,
-    transparent_text: 0.75,
-    zero_font_size: 0.70
+    svg_semantic_mismatch: 0.80,
+    zero_width_fragmentation: 0.75,
+    zero_font_size: 0.50,
+    transparent_text: 0.45,
+    offscreen_legitimacy_text: 0.35,
+    aria_hidden_mismatch: 0.20
   };
 
   function addSignal(type, extra = {}) {
     signals.push({ type, ...extra });
-    if (WEIGHTS[type] > maxScore) maxScore = WEIGHTS[type];
+    totalScore += WEIGHTS[type] || 0;
   }
 
   // 1. Unicode Obfuscation (Zero-width characters)
@@ -392,7 +393,7 @@ function detectSemanticDivergence() {
     }
   }
 
-  return { score: maxScore, signals };
+  return { score: Math.min(totalScore, 1.0), signals };
 }
 
 // Fix #2 + #3: Full DOM extraction — captures countdown timers, brand spoofing,
@@ -429,7 +430,7 @@ function extractPageContent() {
   // SVG Semantic Mismatch (if SVG contains auth keywords)
   if (svgTextContent.trim() && /(login|signin|verify|password|secure|account)/i.test(svgTextContent)) {
     semanticDivergence.signals.push({ type: 'svg_semantic_mismatch' });
-    if (0.80 > semanticDivergence.score) semanticDivergence.score = 0.80;
+    semanticDivergence.score = Math.min(semanticDivergence.score + 0.80, 1.0);
   }
 
   content += h1text   ? `H1: ${h1text}\n`    : '';
