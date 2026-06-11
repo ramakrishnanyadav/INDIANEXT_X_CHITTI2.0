@@ -51,7 +51,7 @@ This repository provides comprehensive setup instructions, explicit architectura
 
 ## 🏗️ System Architecture
 
-Our highly optimized pipeline operates on a lightweight local filtering model before escalating suspicious URLs for deep analysis, guaranteeing zero latency for safe domains.
+Our highly optimized pipeline operates on a lightweight local filtering model before escalating suspicious URLs for deep analysis, guaranteeing minimal latency for safe domains.
 
 ```mermaid
 flowchart TD
@@ -68,7 +68,7 @@ flowchart TD
 
     %% Local Fast Path
     Background -->|"Validate"| FastPath
-    subgraph FastPath["⚡ Local Fast-Path (0ms Latency)"]
+    subgraph FastPath["⚡ Local Fast-Path"]
         direction TB
         Trusted["✓ Trusted Domains"]
         LocalIP["✓ Localhost / Private IPs"]
@@ -84,14 +84,14 @@ flowchart TD
         Router --> Engines
         subgraph Engines["AI Threat Engines"]
             direction LR
-            URL["🔗 URL Engine\n(BERT, WHOIS)"]
+            URL["🔗 URL Engine\n(Heuristics, WHOIS)"]
             Phish["📧 Phishing Engine\n(Heuristics, Gemini)"]
             Inject["🤖 Injection Engine\n(Pattern Match)"]
             Anomaly["📊 Anomaly Engine\n(Isolation Forest)"]
         end
 
-        Engines --> Voter["⚖️ Ensemble Voter\n(Confidence Scoring)"]
-        Voter --> Risk["🎯 Risk Scorer (0-100)"]
+        Engines --> Voter["⚖️ Ensemble Voter\n(Detection Consensus)"]
+        Voter --> Risk["🎯 Risk Scorer\n(Prioritization)"]
         Risk --> XAI["🔍 Explainable AI (SHAP)"]
         XAI --> Narrator["💬 Gemini Narrator\n(Analyst Briefings)"]
     end
@@ -100,6 +100,23 @@ flowchart TD
     Narrator -->|"JSON Response"| Background
     Background --> Popup
 ```
+
+---
+
+## ⚠️ System Limitations & Future Work
+*SentinelIQ is a functional prototype demonstrating defense-in-depth principles. It is not a replacement for commercial-grade solutions like Microsoft Defender or Proofpoint.*
+
+**Current Limitations:**
+*   **Synthetic Anomaly Baselines**: Due to a lack of public enterprise telemetry, the anomaly engine relies on synthetic behavioral profiles.
+*   **Static Ensemble Calibration**: Engine weights are manually tuned rather than dynamically learned.
+*   **Third-Party Threat Feeds**: Relying on external APIs introduces uptime dependencies.
+*   **Heuristic Document Scanning**: Identifies threat signatures but does not replace deep sandbox execution or traditional AV.
+
+**Future Work:**
+*   Dynamic weight calibration via Isotonic Regression.
+*   SIEM integration for real-world telemetry ingestion.
+*   Redis-backed session memory for prompt injection persistence.
+*   Computer Vision (CV) based visual phishing detection.
 
 ---
 
