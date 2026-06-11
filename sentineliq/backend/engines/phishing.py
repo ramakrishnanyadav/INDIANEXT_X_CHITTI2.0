@@ -460,6 +460,8 @@ async def detect_phishing(text: str, app_state: Any, semantic_divergence: Option
         TIER1_SIGNALS = {"urgency_threat_combo", "account_threat", "urgency_deadline", "executive_impersonation"}
         tier1_fired = bool(set(triggered) & TIER1_SIGNALS)
 
+        attribution: list = []
+
         if semantic_divergence and semantic_divergence.get("signals"):
             div_score = float(semantic_divergence.get("score", 0.0))
             if div_score >= 0.65:
@@ -495,8 +497,6 @@ async def detect_phishing(text: str, app_state: Any, semantic_divergence: Option
         #   2. Trust signal absences (legitimacy markers that are MISSING)
         # Keeping them separate lets analysts distinguish "active threat" from
         # "suspicious-but-unverified" — a critical distinction for SOC review.
-
-        attribution: list = []
 
         # Category 1: Active heuristic signals
         signal_weight_map = {
