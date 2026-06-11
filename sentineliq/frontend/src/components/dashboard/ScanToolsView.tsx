@@ -368,7 +368,7 @@ const ScanTools: React.FC = () => {
                     >
                       <div className="flex items-center justify-between pb-6 border-white/5 border-b">
                         <div className="flex items-center gap-4">
-                          <div className={`h-14 w-14 rounded-2xl flex items-center justify-center ${fileResult.score > 50 ? 'bg-red-500/20 text-red-400 shadow-[0_0_30px_rgba(239,68,68,0.2)]' : 'bg-emerald-500/20 text-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.2)]'}`}>
+                          <div className={`h-14 w-14 rounded-2xl flex items-center justify-center ${fileResult.riskScore > 50 ? 'bg-red-500/20 text-red-400 shadow-[0_0_30px_rgba(239,68,68,0.2)]' : 'bg-emerald-500/20 text-emerald-400 shadow-[0_0_30px_rgba(16,185,129,0.2)]'}`}>
                             <ShieldAlert className="h-8 w-8" />
                           </div>
                           <div>
@@ -377,7 +377,7 @@ const ScanTools: React.FC = () => {
                           </div>
                         </div>
                         <div className="text-right">
-                          <div className={`text-4xl font-black tabular-nums ${fileResult.score > 50 ? 'text-red-400' : 'text-emerald-400'}`}>{fileResult.score}%</div>
+                          <div className={`text-4xl font-black tabular-nums ${fileResult.riskScore > 50 ? 'text-red-400' : 'text-emerald-400'}`}>{fileResult.riskScore}%</div>
                           <div className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">Anomaly Index</div>
                         </div>
                       </div>
@@ -386,8 +386,8 @@ const ScanTools: React.FC = () => {
                         <div className="p-6 rounded-2xl bg-black/40 border border-white/5 space-y-2">
                           <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">Heuristic Status</span>
                           <div className="flex items-center gap-2">
-                            <div className={`h-2.5 w-2.5 rounded-full ${fileResult.status === 'safe' ? 'bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-red-400 shadow-[0_0_10px_rgba(239,68,68,0.5)]'} animate-pulse`} />
-                            <span className="text-sm font-black text-white uppercase tracking-widest">{fileResult.status}</span>
+                            <div className={`h-2.5 w-2.5 rounded-full ${fileResult.riskLevel === 'Low' ? 'bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-red-400 shadow-[0_0_10px_rgba(239,68,68,0.5)]'} animate-pulse`} />
+                            <span className="text-sm font-black text-white uppercase tracking-widest">{fileResult.riskLevel}</span>
                           </div>
                         </div>
                         <div className="p-6 rounded-2xl bg-black/40 border border-white/5 space-y-2">
@@ -398,20 +398,20 @@ const ScanTools: React.FC = () => {
 
                       <div className="p-8 rounded-2xl bg-black/60 border border-white/5 space-y-4">
                         <span className="text-[10px] font-black text-zinc-500 uppercase tracking-widest">AI Assessment Summary</span>
-                        <p className="text-xs text-zinc-400 font-mono leading-relaxed">{fileResult.details}</p>
+                        <p className="text-xs text-zinc-400 font-mono leading-relaxed">{fileResult.explanation}</p>
                       </div>
 
-                      {fileResult.threats && fileResult.threats.length > 0 && (
+                      {fileResult.shapData && fileResult.shapData.length > 0 && (
                         <div className="space-y-4">
                           <span className="text-[10px] font-black text-red-400 uppercase tracking-widest ml-1">Critical Signatures Identified</span>
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {fileResult.threats.map((t: any, i: number) => (
+                            {fileResult.shapData.map((t: any, i: number) => (
                               <div key={i} className="flex items-center justify-between p-5 rounded-2xl bg-red-500/5 border border-red-500/10 shadow-lg">
                                 <div className="flex items-center gap-3">
                                   <div className="h-1.5 w-1.5 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
-                                  <span className="text-[10px] font-black text-zinc-300 uppercase tracking-widest">{t.name}</span>
+                                  <span className="text-[10px] font-black text-zinc-300 uppercase tracking-widest">{t.feature}</span>
                                 </div>
-                                <span className="text-[10px] font-black text-red-400 uppercase tracking-widest bg-red-500/10 px-3 py-1.5 rounded-lg border border-red-500/20">{t.severity}</span>
+                                <span className="text-[10px] font-black text-red-400 uppercase tracking-widest bg-red-500/10 px-3 py-1.5 rounded-lg border border-red-500/20">{t.value}% Impact</span>
                               </div>
                             ))}
                           </div>
@@ -432,32 +432,30 @@ const ScanTools: React.FC = () => {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 20 }}
-              className={`rounded-[40px] border-2 p-10 space-y-8 shadow-3xl backdrop-blur-2xl ${result.status === 'danger' || result.status === 'critical' || result.status === 'malicious'
+              className={`rounded-[40px] border-2 p-10 space-y-8 shadow-3xl backdrop-blur-2xl ${result.riskLevel === 'Critical' || result.riskLevel === 'High' || result.riskLevel === 'Medium'
                   ? 'bg-red-500/10 border-red-500/30'
-                  : result.status === 'warning'
-                  ? 'bg-orange-500/10 border-orange-500/30'
                   : 'bg-emerald-500/10 border-emerald-500/30'
               }`}
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-5">
-                  <div className={`p-4 rounded-2xl ${result.status === 'danger' || result.status === 'critical' || result.status === 'malicious' ? 'bg-red-500/20 text-red-400 shadow-[0_0_20px_rgba(239,68,68,0.2)]' : 'bg-emerald-500/20 text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.2)]'}`}>
-                    {result.status === 'danger' || result.status === 'critical' || result.status === 'malicious' ? (
+                  <div className={`p-4 rounded-2xl ${result.riskLevel === 'Critical' || result.riskLevel === 'High' || result.riskLevel === 'Medium' ? 'bg-red-500/20 text-red-400 shadow-[0_0_20px_rgba(239,68,68,0.2)]' : 'bg-emerald-500/20 text-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.2)]'}`}>
+                    {result.riskLevel === 'Critical' || result.riskLevel === 'High' || result.riskLevel === 'Medium' ? (
                       <AlertTriangle className="h-8 w-8" />
                     ) : (
                       <CheckCircle2 className="h-8 w-8" />
                     )}
                   </div>
                   <div>
-                    <h3 className={`text-2xl font-black uppercase tracking-tighter ${result.status === 'danger' || result.status === 'critical' || result.status === 'malicious' ? 'text-red-400' : 'text-emerald-400'}`}>
-                      {result.status === 'danger' || result.status === 'critical' || result.status === 'malicious' ? 'Threat Detected' : 'Payload Verified'}
+                    <h3 className={`text-2xl font-black uppercase tracking-tighter ${result.riskLevel === 'Critical' || result.riskLevel === 'High' || result.riskLevel === 'Medium' ? 'text-red-400' : 'text-emerald-400'}`}>
+                      {result.riskLevel === 'Critical' || result.riskLevel === 'High' || result.riskLevel === 'Medium' ? 'Threat Detected' : 'Payload Verified'}
                     </h3>
                     <p className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.3em] mt-1">Global Database Scan: 100% Complete</p>
                   </div>
                 </div>
-                {result.score !== undefined && (
+                {result.riskScore !== undefined && (
                   <div className="text-right">
-                    <div className={`text-4xl font-black ${result.score > 50 ? 'text-red-400' : 'text-emerald-400'}`}>{result.score}%</div>
+                    <div className={`text-4xl font-black ${result.riskScore > 50 ? 'text-red-400' : 'text-emerald-400'}`}>{result.riskScore}%</div>
                     <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">Risk Confidence</div>
                   </div>
                 )}
@@ -465,19 +463,19 @@ const ScanTools: React.FC = () => {
               
               <div className="p-8 rounded-3xl bg-black/50 border border-white/10 shadow-inner">
                 <p className="text-sm text-zinc-300 leading-relaxed font-mono">
-                  {result.details || 'The scanning engine has completed its analysis. No malicious signatures were identified in the provided payload.'}
+                  {result.explanation || 'The scanning engine has completed its analysis. No malicious signatures were identified in the provided payload.'}
                 </p>
               </div>
 
-              {result.threats && result.threats.length > 0 && (
+              {result.shapData && result.shapData.length > 0 && (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {result.threats.map((threat: any, i: number) => (
+                  {result.shapData.map((threat: any, i: number) => (
                     <div key={i} className="p-4 rounded-2xl bg-black/60 border border-red-500/20 flex items-center justify-between group hover:border-red-500/40 transition-all">
                       <div className="flex items-center gap-3">
                         <div className="h-2 w-2 rounded-full bg-red-400 shadow-[0_0_10px_rgba(248,113,113,0.8)]" />
-                        <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{threat.name}</span>
+                        <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">{threat.feature}</span>
                       </div>
-                      <span className="text-[10px] font-black text-red-400 uppercase tracking-widest bg-red-500/10 px-2 py-1 rounded">{threat.severity}</span>
+                      <span className="text-[10px] font-black text-red-400 uppercase tracking-widest bg-red-500/10 px-2 py-1 rounded">{threat.value}%</span>
                     </div>
                   ))}
                 </div>
