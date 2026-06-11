@@ -33,7 +33,7 @@ class RedirectUnwinder:
         current_url = url
         
         # Guard against infinite loops
-        max_depth = 5
+        max_depth = 8
         
         while depth < max_depth:
             parsed = urlparse(current_url)

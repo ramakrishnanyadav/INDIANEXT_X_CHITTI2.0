@@ -237,14 +237,20 @@ async def detect_injection(
 
         combined = min(1.0, max(0.0, combined))
 
-        effective_threshold = (
+        effective_malicious = (
             InjectionConfig.MALICIOUS_THRESHOLD - 0.08
             if escalation_mode else
             InjectionConfig.MALICIOUS_THRESHOLD
         )
+        effective_suspicious = (
+            InjectionConfig.SUSPICIOUS_THRESHOLD - 0.05
+            if escalation_mode else
+            InjectionConfig.SUSPICIOUS_THRESHOLD
+        )
 
         verdict: str = (
-            "MALICIOUS" if combined >= effective_threshold
+            "MALICIOUS" if combined >= effective_malicious
+            else "SUSPICIOUS" if combined >= effective_suspicious
             else "BENIGN"
         )
 
