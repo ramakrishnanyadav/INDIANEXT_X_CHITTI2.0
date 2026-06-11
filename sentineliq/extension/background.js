@@ -270,7 +270,7 @@ function isBypassedUrl(url) {
   try {
     const h = new URL(url).hostname;
     // Prevent SentinelIQ from blocking its own dashboard or backend!
-    if (h.includes('indianext') || h.includes('sentineliq')) return true;
+    if (h.includes('indianext') || h.includes('sentineliq') || h.includes('render.com')) return true;
   } catch {}
   return url.startsWith('file://') || isPrivateIpOrLocalhost(url);
 }
