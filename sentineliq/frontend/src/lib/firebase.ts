@@ -1,4 +1,4 @@
-// Firebase configuration and initialization for CyberShieldIQ
+// Firebase configuration and initialization for SentinelIQ
 import { initializeApp, FirebaseApp } from 'firebase/app'
 import { getFirestore, Firestore } from 'firebase/firestore'
 import { getAnalytics, Analytics } from 'firebase/analytics'

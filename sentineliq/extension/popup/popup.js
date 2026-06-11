@@ -243,10 +243,12 @@ async function refreshMainRing(url) {
     return;
   }
 
-  // Populate engines from the merged cached result if available
-  // The backend doesn't cache individually anymore, so we map the worst verdict to all or use specific if available
-  const engines = ['url', 'phishing', 'injection', 'anomaly', 'email'];
-  engines.forEach(e => updateEngineRow(e, cached));
+  // Set specific engines if they exist in the cached response
+  if (cached.detection_source === 'dom_content_phishing') {
+    updateEngineRow('phishing', cached);
+  } else if (cached.detection_source === 'url_structural') {
+    updateEngineRow('url', cached);
+  }
 
   renderResult(cached, url);
 }

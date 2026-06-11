@@ -125,20 +125,23 @@ async def _layer_b_gemini(text: str, app_state: Any) -> Dict[str, Any]:
         try:
             _c, _p = client, prompt
 
-            def _call() -> Any:
-                return _c.models.generate_content(model="gemini-2.5-flash", contents=_p)
+            async def _call() -> Any:
+                response = await _c.chat.completions.create(
+                    model="mistralai/Mistral-7B-Instruct-v0.2",
+                    messages=[{"role": "user", "content": _p}],
+                )
+                return response
 
-            loop = asyncio.get_running_loop()
             timeout = (
-                InjectionConfig.GEMINI_TIMEOUT
+                15.0
                 if attempt == 0
-                else InjectionConfig.GEMINI_FALLBACK_TIMEOUT
+                else 8.0
             )
             response: Any = await asyncio.wait_for(
-                loop.run_in_executor(None, _call),  # type: ignore[arg-type]
+                _call(),
                 timeout=timeout,
             )
-            raw: str = str(response.text).strip()
+            raw: str = str(response.choices[0].message.content).strip()
 
             # Strip markdown fences
             raw = re.sub(r"^```[a-z]*\n?", "", raw)

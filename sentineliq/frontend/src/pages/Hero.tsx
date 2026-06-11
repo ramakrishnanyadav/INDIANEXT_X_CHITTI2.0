@@ -118,7 +118,7 @@ const Hero: React.FC = () => {
                 className="inline-flex items-center gap-2 mb-8 px-3 py-1.5 rounded-full border border-cyan-500/20 bg-cyan-500/5 text-[10px] font-black uppercase tracking-[0.3em] text-cyan-400"
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse" />
-                CyberShield AI v4.2 — All Systems Operational
+                SentinelIQ AI v4.2 — All Systems Operational
               </motion.div>
 
               {/* Main headline */}
@@ -144,7 +144,7 @@ const Hero: React.FC = () => {
                 transition={{ duration: 0.55, delay: 0.25 }}
                 className="text-[16px] text-zinc-400 leading-relaxed mb-10 max-w-[480px]"
               >
-                CyberShield's autonomous AI monitors every connection in your
+                SentinelIQ's autonomous AI monitors every connection in your
                 infrastructure — detecting and neutralizing threats in
                 {' '}<span className="text-cyan-400 font-bold">under 10ms</span>,
                 24/7/365, across every vector.

@@ -185,26 +185,26 @@ async def get_narration(
         }
 
     for tier, prompt, timeout in [
-        ("gemini_tier1", prompt_t1, 4.0),
-        ("gemini_tier2", prompt_t2, 3.0),
+        ("gemini_tier1", prompt_t1, 15.0),
+        ("gemini_tier2", prompt_t2, 8.0),
     ]:
         try:
             _client = client
             _prompt = prompt
 
-            def _call() -> Any:
-                return _client.models.generate_content(
-                    model="gemini-2.5-flash",
-                    contents=_prompt,
+            async def _call() -> Any:
+                response = await _client.chat.completions.create(
+                    model="mistralai/Mistral-7B-Instruct-v0.2",
+                    messages=[{"role": "user", "content": _prompt}],
                 )
+                return response
 
-            loop = asyncio.get_event_loop()
             response: Any = await asyncio.wait_for(
-                loop.run_in_executor(None, _call),  # type: ignore[arg-type]
+                _call(),
                 timeout=timeout,
             )
 
-            raw = str(response.text).strip()
+            raw = str(response.choices[0].message.content).strip()
 
             # Parse by splitting on "Action:"
             if "Action:" in raw:

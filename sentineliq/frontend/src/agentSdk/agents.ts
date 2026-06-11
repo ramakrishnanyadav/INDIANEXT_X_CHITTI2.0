@@ -4,7 +4,7 @@ import { z } from 'zod';
 export const AGENT_CONFIGS: AgentConfig[] = [
   {
     "id": "4fcf44b7-9a5c-473a-a933-916ffc9e6ccf",
-    "name": "CyberShield Security Analyst",
+    "name": "SentinelIQ Security Analyst",
     "description": "An advanced AI security agent designed to monitor, analyze, and mitigate cybersecurity threats in real-time. It processes security logs, identifies anomalies, and provides human-readable explanations using SHAP logic.",
     "triggerEvents": [
       {

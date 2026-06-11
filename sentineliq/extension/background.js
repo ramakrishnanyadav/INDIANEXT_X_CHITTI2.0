@@ -530,7 +530,10 @@ async function scanContent(text, semanticDivergence = null) {
     // Chrome versions — use String(err) as fallback for clear console output.
     const isTimeout = err.name === 'TimeoutError' || err.name === 'AbortError';
     console.warn(`[scanContent] skipped — ${isTimeout ? 'backend cold-starting (timeout)' : String(err)}`);
-    return { verdict: 'ERROR', explanation: 'Backend cold-starting.' };
+    return { 
+      verdict: 'ERROR', 
+      explanation: isTimeout ? 'Backend cold-starting.' : `Backend Error: ${err.message || String(err)}`
+    };
   }
 }
 
@@ -988,8 +991,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (tabId) setBadge(tabId, 'ERROR');
             const r = {
               ...urlResult,
-              explanation: urlResult.explanation ||
-                'Backend is warming up. Auto-retry in 15 seconds.',
+              verdict: 'ERROR',
+              explanation: urlResult.explanation && urlResult.verdict === 'ERROR' 
+                ? urlResult.explanation 
+                : 'Backend is warming up. Auto-retry in 15 seconds.',
             };
             sendResponse({ result: r });
             safeSendMessage({ type: 'PAGE_RESULT', result: r, url: msg.url });
@@ -1022,7 +1027,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
             if (
               finalResult.verdict === 'MALICIOUS' &&
-              (finalResult.risk_score || 0) >= 70 &&
               !isPrivateIpOrLocalhost(msg.url)
             ) {
               // Last-chance sync check: catches any in-flight whitelist added
@@ -1126,12 +1130,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'GET_SETTINGS') {
-    chrome.storage.local.get('backendUrl').then(d => sendResponse({ backendUrl: d.backendUrl || DEFAULT_BACKEND }));
+    chrome.storage.local.get('siq_backend_url').then(d => sendResponse({ backendUrl: d.siq_backend_url || DEFAULT_BACKEND }));
     return true;
   }
 
   if (msg.type === 'SET_SETTINGS') {
-    chrome.storage.local.set({ backendUrl: msg.backendUrl }).then(() => sendResponse({ ok: true }));
+    currentBackendUrl = msg.backendUrl || DEFAULT_BACKEND;
+    chrome.storage.local.set({ siq_backend_url: msg.backendUrl }).then(() => sendResponse({ ok: true }));
     return true;
   }
 
@@ -1276,7 +1281,6 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     if (
       finalResult.verdict === 'MALICIOUS' &&
-      (finalResult.risk_score || 0) >= 70 &&
       !isPrivateIpOrLocalhost(ctx.url) &&
       !_whitelistHasSync(ctx.url)
     ) {
@@ -1351,7 +1355,7 @@ if (typeof chrome.webNavigation !== 'undefined') {
     if (_whitelistHasSync(url)) return; // user approved — never re-block
 
     const cached = await getCached(url);
-    if (cached && cached.verdict === 'MALICIOUS' && (cached.risk_score || 0) >= 70) {
+    if (cached && cached.verdict === 'MALICIOUS') {
       _intercepted.add(tabId);
       await recordBlock(url);
       setBadge(tabId, 'MALICIOUS');

@@ -102,7 +102,7 @@ const Auth = () => {
           <div className="flex items-center gap-2 mb-6 cursor-pointer" onClick={() => navigate('/')}>
             <ShieldCheck className="h-8 w-8 text-cyan-400" />
             <span className="text-2xl font-black text-white tracking-tight">
-              Cyber<span className="text-cyan-400">Shield</span>
+              Sentinel<span className="text-cyan-400">IQ</span>
             </span>
           </div>
           <h1 className="text-2xl font-bold tracking-tight text-white mb-2">
@@ -171,7 +171,7 @@ const Auth = () => {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="admin@cybershield.io"
+                  placeholder="admin@sentineliq.io"
                   className="w-full bg-black/50 border border-white/10 rounded-xl py-3 pl-11 pr-4 text-sm text-white focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/50 transition-all placeholder:text-zinc-700"
                   required
                 />

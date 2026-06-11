@@ -30,7 +30,7 @@ export const Navbar: React.FC = () => {
             <ShieldCheck className="h-5 w-5 text-cyan-400" />
           </div>
           <span className="text-xl font-bold tracking-tighter text-white">
-            Cyber<span className="text-cyan-400">Shield</span>
+            Sentinel<span className="text-cyan-400">IQ</span>
           </span>
         </NavLink>
 

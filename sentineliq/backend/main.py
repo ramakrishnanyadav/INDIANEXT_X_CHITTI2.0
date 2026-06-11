@@ -34,22 +34,25 @@ from db.database import init_firebase  # type: ignore[import]
 from config import validate_config  # type: ignore[import]
 from middleware.auth_middleware import AuthMiddleware  # type: ignore[import]
 
-async def init_gemini(app: FastAPI) -> None:
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+async def init_featherless(app: FastAPI) -> None:
+    api_key = os.getenv("FEATHERLESS_API_KEY", "").strip()
     if api_key:
         try:
-            from google import genai  # type: ignore[import]
-            app.state.gemini_client = genai.Client(api_key=api_key)
+            from openai import AsyncOpenAI  # type: ignore[import]
+            app.state.gemini_client = AsyncOpenAI(
+                base_url="https://api.featherless.ai/v1",
+                api_key=api_key
+            )
             app.state.gemini_available = True
-            logger.info("Gemini client initialized.")
+            logger.info("Featherless client initialized.")
         except Exception as exc:
             app.state.gemini_client = None
             app.state.gemini_available = False
-            logger.error("Failed to init Gemini client: %s", exc)
+            logger.error("Failed to init Featherless client: %s", exc)
     else:
         app.state.gemini_client = None
         app.state.gemini_available = False
-        logger.warning("GEMINI_API_KEY not set - offline mode only.")
+        logger.warning("FEATHERLESS_API_KEY not set - offline mode only.")
 
 
 
@@ -68,7 +71,7 @@ async def lifespan(app: FastAPI):
     await load_url_model(app)
     await compile_patterns(app)
     await load_anomaly_model(app)
-    await init_gemini(app)
+    await init_featherless(app)
 
     logger.info("\u2501" * 50)
     logger.info(f"  phishing  \u2192 {app.state.phishing_mode}")

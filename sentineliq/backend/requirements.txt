@@ -17,8 +17,8 @@ xgboost>=2.0.3
 # Firebase
 firebase-admin==6.5.0
 
-# Gemini
-google-genai==0.8.0
+# AI API
+openai==1.50.0
 
 # File parsing
 # pymupdf==1.24.5 (Fails on Python 3.14 without VS C++)
