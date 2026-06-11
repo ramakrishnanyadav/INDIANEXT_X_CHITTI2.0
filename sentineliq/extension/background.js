@@ -447,7 +447,7 @@ async function scanUrl(url) {
     const resp = await fetch(`${currentBackendUrl}/analyze`, {
       method: 'POST', body: fd,
       headers: _buildHeaders(token),
-      signal: AbortSignal.timeout(5000), // Fail fast — Render free tier cold-starts in 15s+
+      signal: AbortSignal.timeout(30000), // Increased to wait for cold start
     });
     // A15: 401 retry guard — attempt once after forced logout
     if (resp.status === 401) {
@@ -458,7 +458,7 @@ async function scanUrl(url) {
       const resp2 = await fetch(`${currentBackendUrl}/analyze`, {
         method: 'POST', body: fd2,
         headers: _buildHeaders(null),
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(30000),
       });
       if (!resp2.ok) throw new Error(`HTTP ${resp2.status}`);
       const data2 = await resp2.json();
@@ -513,7 +513,7 @@ async function scanContent(text, semanticDivergence = null) {
     const resp = await fetch(`${currentBackendUrl}/analyze`, {
       method: 'POST', body: fd,
       headers: _buildHeaders(token),
-      signal: AbortSignal.timeout(8000), // Fail fast — never block for 15s on a content scan
+      signal: AbortSignal.timeout(30000), // Increased from 8s to 30s to allow Mistral AI inference time
     });
     if (resp.status === 401) {
       await _forceLogout('401_invalid_token');

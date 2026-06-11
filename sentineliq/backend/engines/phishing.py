@@ -319,15 +319,18 @@ async def _gemini_phishing_judge(text: str, app_state: Any) -> Dict[str, Any]:
             _c = client
             _p = prompt
 
-            def _call() -> Any:
-                return _c.models.generate_content(model="gemini-2.5-flash", contents=_p)
+            async def _call() -> Any:
+                response = await _c.chat.completions.create(
+                    model="mistralai/Mistral-7B-Instruct-v0.2",
+                    messages=[{"role": "user", "content": _p}],
+                )
+                return response
 
-            loop = asyncio.get_event_loop()
             response: Any = await asyncio.wait_for(
-                loop.run_in_executor(None, _call),  # type: ignore[arg-type]
+                _call(),
                 timeout=PhishingConfig.GEMINI_TIMEOUT,
             )
-            raw: str = str(response.text).strip()
+            raw: str = str(response.choices[0].message.content).strip()
             logger.debug("Gemini Phishing RAW: %s", raw)
 
             # Strip markdown fences
