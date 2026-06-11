@@ -110,7 +110,7 @@ export function useFirestoreAnalytics(uid: string | null): AnalyticsData {
         const q = query(
           collection(db, 'users', uid, 'incidents'),
           orderBy('timestamp', 'desc'),
-          limit(200),
+          limit(5000),
         )
 
         const unsub = onSnapshot(q, snapshot => {

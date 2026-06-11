@@ -267,6 +267,11 @@ function isPrivateIpOrLocalhost(url) {
 }
 
 function isBypassedUrl(url) {
+  try {
+    const h = new URL(url).hostname;
+    // Prevent SentinelIQ from blocking its own dashboard or backend!
+    if (h.includes('indianext') || h.includes('sentineliq')) return true;
+  } catch {}
   return url.startsWith('file://') || isPrivateIpOrLocalhost(url);
 }
 
@@ -1027,7 +1032,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
             if (
               finalResult.verdict === 'MALICIOUS' &&
-              !isPrivateIpOrLocalhost(msg.url)
+              !isBypassedUrl(msg.url)
             ) {
               // Last-chance sync check: catches any in-flight whitelist added
               // during the scan window (e.g. user double-clicks Proceed).
@@ -1114,7 +1119,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'OPEN_DASHBOARD') {
-    chrome.tabs.create({ url: 'http://localhost:5000/dashboard' });
+    chrome.tabs.create({ url: 'https://indianext-x-chitti-2-0.vercel.app/dashboard' });
     return true;
   }
 
@@ -1281,7 +1286,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
     if (
       finalResult.verdict === 'MALICIOUS' &&
-      !isPrivateIpOrLocalhost(ctx.url) &&
+      !isBypassedUrl(ctx.url) &&
       !_whitelistHasSync(ctx.url)
     ) {
       const params = new URLSearchParams({

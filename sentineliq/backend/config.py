@@ -310,7 +310,7 @@ class PhishingConfig:
         "CRITICAL: If it is a normal business or transactional email (e.g. tracking, meeting, invoice, internal report, newsletter), YOU MUST output \"verdict\":\"BENIGN\" and \"confidence\":0.99.\n"
         "Respond ONLY with valid JSON, no markdown fences.\n"
         'Input: """{snippet}"""\n'
-        'Format: {{"verdict":"MALICIOUS","confidence":0.95,"reason":"Explains intent"}}'
+        'Format: {{"verdict": "<BENIGN or SUSPICIOUS or MALICIOUS>", "confidence": 0.95, "reason": "Explains intent"}}'
     )
 
 

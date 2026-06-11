@@ -6,11 +6,11 @@
 'use strict';
 
 // ── Self-page guard ───────────────────────────────────────────────────────────
-// Never scan the extension's own pages (blocked.html, popup, etc.).
+// Never scan the extension's own pages (blocked.html, popup, etc.) or our own project domains.
 // If we do, the popup shows PENDING and background may re-trigger a block loop.
-if (location.href.startsWith('chrome-extension://') || location.protocol === 'chrome-extension:') {
-  // Halt content script execution for all extension pages
-  throw new Error('[SentinelIQ] Skipping scan on own extension page.');
+if (location.href.startsWith('chrome-extension://') || location.protocol === 'chrome-extension:' || location.hostname.includes('indianext') || location.hostname.includes('sentineliq')) {
+  // Halt content script execution for all extension pages and project dashboards
+  throw new Error('[SentinelIQ] Skipping scan on own extension page or project domain.');
 }
 
 const DEBOUNCE_MS = 250;
