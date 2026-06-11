@@ -258,7 +258,7 @@ def _token_scores(text: str) -> List[Dict[str, Any]]:
     return result
 
 
-# ─── Gemini Layer C ───────────────────────────────────────────────────────────
+# ─── Layer C: LLM Cross-Validation ───────────────────────────────────────────────
 
 async def _gemini_token_bucket_acquire() -> bool:
     """
@@ -286,7 +286,7 @@ async def _gemini_token_bucket_acquire() -> bool:
 
 async def _gemini_phishing_judge(text: str, app_state: Any) -> Dict[str, Any]:
     """
-    Layer C: Gemini cross-validation to catch flawless LLM-generated phishing.
+    Layer C: LLM cross-validation to catch flawless LLM-generated phishing.
     Implements:
       - Token bucket rate limiting (max 8 calls/min, module-level)
       - Exponential backoff on 429: 1s → 2s → 4s … up to 16s
@@ -442,13 +442,10 @@ async def detect_phishing(text: str, app_state: Any, semantic_divergence: Option
         # Only apply absence bonus if there are existing heuristic signals too.
         # This is the key false-positive fix: plain business emails score 0 on
         # heuristics and should NOT be pushed into SUSPICIOUS by absence alone.
-        if heuristic_result["signal_count"] > 0:
+        if heuristic_result["score"] > 0.20:
             final_confidence = min(1.0, final_confidence + absence["absence_score"] * 0.35)
-        # If NO heuristic signals fired, absence alone should never cross SUSPICIOUS threshold
-        elif absence["absence_score"] > 0:
-            final_confidence = min(0.40, final_confidence + absence["absence_score"] * 0.2)
 
-        # Gemini Layer C: trigger when standard confidence is below threshold
+        # LLM Layer C: trigger when standard confidence is below threshold
         gemini_conf = 0.0
         if final_confidence < PhishingConfig.GEMINI_TRIGGER_THRESHOLD and len(text) > 50:
             lb = await _gemini_phishing_judge(text, app_state)

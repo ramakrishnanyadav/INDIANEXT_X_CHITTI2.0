@@ -1,8 +1,10 @@
 import logging
+import re
 from urllib.parse import urlparse, parse_qs, unquote
 from typing import Dict, Any
 
 import httpx  # type: ignore[import]
+from config import URLConfig  # type: ignore[import]
 
 logger = logging.getLogger("sentineliq.unwinder")
 
@@ -16,10 +18,13 @@ KNOWN_WRAPPERS = {
     "l.instagram.com": ["u"],
 }
 
-# Known shorteners that need a HEAD request
+# Known shorteners that need a network request
 KNOWN_SHORTENERS = {
     "bit.ly", "t.co", "tinyurl.com", "is.gd", "buff.ly", "ow.ly", "goo.gl"
 }
+
+META_REFRESH_RE = re.compile(r'(?i)<meta\s+http-equiv=["\']?refresh["\']?\s+content=["\']?\d+;\s*url=([^"\'>]+)["\']?')
+WINDOW_LOCATION_RE = re.compile(r'(?i)window\.location(?:\.replace|\.assign|\.href)?\s*(?:=|\()\s*["\']([^"\']+)["\']')
 
 class RedirectUnwinder:
     @classmethod
@@ -33,7 +38,7 @@ class RedirectUnwinder:
         current_url = url
         
         # Guard against infinite loops
-        max_depth = 8
+        max_depth = getattr(URLConfig, "MAX_REDIRECT_DEPTH", 8)
         
         while depth < max_depth:
             parsed = urlparse(current_url)
@@ -61,16 +66,35 @@ class RedirectUnwinder:
             if extracted:
                 continue
                 
-            # 2. Check known shorteners (requires network request)
+            # 2. Check known shorteners & extract HTTP/JS/Meta redirects
             if hostname in KNOWN_SHORTENERS:
                 try:
                     async with httpx.AsyncClient(timeout=3.0, follow_redirects=False) as client:
-                        resp = await client.head(current_url)
+                        resp = await client.get(current_url)
                         if 300 <= resp.status_code < 400 and "location" in resp.headers:
                             wrappers.append(hostname)
                             current_url = resp.headers["location"]
                             depth += 1
                             continue
+                        elif resp.status_code == 200:
+                            text = resp.text
+                            # Check meta refresh
+                            meta_match = META_REFRESH_RE.search(text)
+                            if meta_match:
+                                next_url = meta_match.group(1).strip()
+                                wrappers.append(hostname)
+                                current_url = next_url if next_url.startswith("http") else f"{parsed.scheme}://{parsed.netloc}/{next_url.lstrip('/')}"
+                                depth += 1
+                                continue
+                                
+                            # Check JS redirect
+                            js_match = WINDOW_LOCATION_RE.search(text)
+                            if js_match:
+                                next_url = js_match.group(1).strip()
+                                wrappers.append(hostname)
+                                current_url = next_url if next_url.startswith("http") else f"{parsed.scheme}://{parsed.netloc}/{next_url.lstrip('/')}"
+                                depth += 1
+                                continue
                 except Exception as e:
                     logger.debug(f"Failed to unwind shortener {current_url}: {e}")
                     # Stop unwinding if network fails

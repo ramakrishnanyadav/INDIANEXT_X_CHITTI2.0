@@ -2,7 +2,7 @@
 Prompt Injection Detection Engine
 ==================================
 Layer A : Regex (all patterns from config.py) + homoglyph normalization
-Layer B : Gemini AI cross-check
+Layer B : LLM AI cross-check
 
 All patterns, thresholds, and constants come from config.py.
 Patterns are compiled once at module startup, never inside detect functions.
@@ -105,10 +105,10 @@ def _layer_a(text: str) -> Dict[str, Any]:
     }
 
 
-# ─── Layer B: Gemini judge ────────────────────────────────────────────────────
+# ─── Layer B: LLM judge ────────────────────────────────────────────────────
 
 async def _layer_b_gemini(text: str, app_state: Any) -> Dict[str, Any]:
-    """Calls Gemini with structured prompt from config. Returns 0.0 on any failure."""
+    """Calls LLM with structured prompt from config. Returns 0.0 on any failure."""
     if not getattr(app_state, "gemini_available", False):
         return {"confidence": 0.0, "reason": "Gemini unavailable"}
 
@@ -216,8 +216,8 @@ async def detect_injection(
         layer_b_score: float = 0.0
         layer_b_reason: str = ""
         # Layer B run condition:
-        # - score < 0.75: uncertain — Gemini used to confirm or deny
-        # - score >= 0.85: very high confidence — Gemini cross-checks to prevent false positives
+        # - score < 0.75: uncertain — LLM used to confirm or deny
+        # - score >= 0.85: very high confidence — LLM cross-checks to prevent false positives
         # - 0.75 <= score < 0.85: high-confidence band deliberately skipped for performance.
         #   These are strong regex hits that don't need cross-validation to be actionable.
         run_b = layer_a_score < 0.75 or layer_a_score >= 0.85

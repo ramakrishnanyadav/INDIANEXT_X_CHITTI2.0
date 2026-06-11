@@ -88,20 +88,33 @@ def _normalize_hostname_for_brand(hostname: str) -> str:
     return h
 
 
-def _is_brand_spoof(hostname: str) -> bool:
-    # Normalize through homoglyph map so amaz0n, paypa1, g00gle are caught
+def _is_brand_spoof(hostname: str, apex_domain: str) -> bool:
+    import difflib
     h_raw = hostname.lower()
-    h_norm = _normalize_hostname_for_brand(h_raw)
+    apex = apex_domain.lower() if apex_domain else h_raw
+    apex_norm = _normalize_hostname_for_brand(apex)
+    apex_name = apex_norm.split('.')[0] if '.' in apex_norm else apex_norm
+
     for brand in URLConfig.BRAND_NAMES:
-        # Check both raw and normalized hostname
-        if brand in h_raw or brand in h_norm:
-            canonicals = URLConfig.BRAND_CANONICAL.get(brand, (f"{brand}.com",))
-            canonical_match = any(
-                h_raw == c.lstrip(".") or h_raw.endswith("." + c.lstrip("."))
-                for c in canonicals
-            )
-            if not canonical_match:
-                return True
+        canonicals = URLConfig.BRAND_CANONICAL.get(brand, (f"{brand}.com",))
+        canonical_match = any(
+            h_raw == c.lstrip(".") or h_raw.endswith("." + c.lstrip("."))
+            for c in canonicals
+        )
+        if canonical_match:
+            continue  # Legitimate domain for this brand, check other brands just in case
+
+        brand_lower = brand.lower()
+        
+        # Exact match on apex name
+        if apex_name == brand_lower:
+            return True
+            
+        # Fuzzy match (e.g. paypa1 vs paypal)
+        ratio = difflib.SequenceMatcher(None, apex_name, brand_lower).ratio()
+        if ratio > 0.85:
+            return True
+
     return False
 
 # ─── WHOIS domain age (with Graceful Degradation) ─────────────────────────────
@@ -161,7 +174,7 @@ def _check_domain_age(hostname: str) -> Dict[str, Any]:
 
 # ─── Rule engine ──────────────────────────────────────────────────────────────
 
-def _rule_based_features(url: str, domain_age: Dict[str, Any], redirect_depth: int) -> Dict[str, float]:
+def _rule_based_features(url: str, domain_age: Dict[str, Any], redirect_depth: int, apex_domain: str = "") -> Dict[str, float]:
     url_str = str(url)
     try:
         parsed = urlparse(url_str if "://" in url_str else f"http://{url_str}")
@@ -175,7 +188,7 @@ def _rule_based_features(url: str, domain_age: Dict[str, Any], redirect_depth: i
 
     has_ip = float(bool(re.match(r"^\d{1,3}(\.\d{1,3}){3}$", hostname)))
     suspicious_tld = float(any(hostname.endswith(tld) for tld in URLConfig.SUSPICIOUS_TLDS))
-    brand_spoof = float(_is_brand_spoof(hostname))
+    brand_spoof = float(_is_brand_spoof(hostname, apex_domain))
     suspicious_keywords = float(any(kw in full_path_query or kw in hostname for kw in URLConfig.SUSPICIOUS_KEYWORDS))
 
     no_https = float(str(parsed.scheme).lower() != "https" and not _is_private_host(hostname))
@@ -471,17 +484,25 @@ async def detect_url(url: str, app_state: Any) -> Dict[str, Any]:
 
         loop = asyncio.get_running_loop()
         
-        # Step 3: Tier 1 Reputation Fast Pass
-        if TrancoCache.is_tier_1_reputation(apex_domain) and redirect_depth == 0:
-            return {
-                "confidence": 0.05,  # Non-zero baseline to reflect 'trusted but verify'
-                "verdict": "BENIGN",
-                "shap_features": [{"feature": "Tier 1 Tranco Trusted", "weight": 1.0, "direction": "negative"}],
-                "mode": "tier_1_fast_pass",
-                "domain_age_days": None,
-                "redirect_depth": redirect_depth,
-                "tier_used": "Tier 1"
-            }
+        # Step 3: Tier 1 Reputation Fast Pass (Conditional)
+        is_tier_1 = TrancoCache.is_tier_1_reputation(apex_domain) and redirect_depth == 0
+        if is_tier_1:
+            # Run lightweight rules. Bypass expensive WHOIS/BERT only if rules are clean.
+            dummy_age = {"age_days": None, "new_domain": False, "very_new_domain": False}
+            t1_rules = _rule_based_features(final_url, dummy_age, redirect_depth, apex_domain)
+            t1_score = _weighted_rule_score(t1_rules)
+            
+            if t1_score < URLConfig.SUSPICIOUS_THRESHOLD:
+                return {
+                    "confidence": max(0.05, t1_score),
+                    "verdict": "BENIGN",
+                    "shap_features": [{"feature": "Tier 1 Tranco Trusted", "weight": 1.0, "direction": "negative"}],
+                    "mode": "tier_1_fast_pass",
+                    "domain_age_days": None,
+                    "redirect_depth": redirect_depth,
+                    "tier_used": "Tier 1"
+                }
+            # If t1_score is suspicious, fall through to full Tier 2 analysis
 
         # Step 3.5: Live Threat Intelligence Feeds (Tier 1.5)
         threat_feed = await _check_live_threat_feeds(final_url)
@@ -489,7 +510,7 @@ async def detect_url(url: str, app_state: Any) -> Dict[str, Any]:
 
         # Step 4: Tier 2 Standard Analysis
         domain_age = await loop.run_in_executor(None, _check_domain_age, hostname)
-        rule_features = _rule_based_features(final_url, domain_age, redirect_depth)
+        rule_features = _rule_based_features(final_url, domain_age, redirect_depth, apex_domain)
         
         # If we got a live hit, we still want to calculate rule features (like Brand Spoof) for corroboration.
         # We manually inject the threat feed hit into the features map.
@@ -523,11 +544,11 @@ async def detect_url(url: str, app_state: Any) -> Dict[str, Any]:
         # Calibration removed: The Platt scale prior inverted the trust model
         # Score starts at zero. Confidence is earned, not assumed.
             
-        # Apply API Fallback Penalty if Live Threat feeds failed
+        # Apply API Fallback Penalty if Live Threat feeds failed (reduces certainty)
         if threat_feed.get("api_failed", False):
             penalty = float(threat_feed.get("penalty", 0.0))
             if final_conf > URLConfig.SUSPICIOUS_THRESHOLD:
-                final_conf += penalty
+                final_conf -= penalty
 
         # Signal Override Rule
         # If any single signal fires at or above URLConfig.SIGNAL_OVERRIDE_THRESHOLD:
