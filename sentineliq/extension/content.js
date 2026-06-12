@@ -345,7 +345,9 @@ function detectSemanticDivergence() {
     if (style.opacity === '0' || style.color === 'rgba(0, 0, 0, 0)' || style.color === 'transparent') {
       const rect = el.getBoundingClientRect();
       const area = rect.width * rect.height;
-      if (area > 10000 || style.position === 'absolute' || style.position === 'fixed') {
+      // To be a clickjacking overlay, it must cover a huge area (e.g., 300x300+)
+      // AND be positioned out of standard document flow.
+      if (area > 100000 && (style.position === 'absolute' || style.position === 'fixed')) {
         addSignal('invisible_clickable_overlay', { tag: el.tagName });
       }
     }
