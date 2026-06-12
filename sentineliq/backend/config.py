@@ -376,6 +376,10 @@ class URLConfig:
         "wixsite.com", "wordpress.com", "blogspot.com"
     }
 
+    TRUSTED_TLDS: Set[str] = {
+        ".edu", ".ac.in", ".edu.in", ".gov", ".gov.in", ".mil"
+    }
+
     PRIVATE_IP_PREFIXES: List[str] = [
         "localhost", "127.", "10.", "192.168.",
         "172.16.", "172.17.", "172.18.", "172.19.", "172.20.",

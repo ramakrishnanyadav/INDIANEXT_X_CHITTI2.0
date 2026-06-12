@@ -81,7 +81,12 @@ class TrancoCache:
             if d == platform or d.endswith("." + platform):
                 return False
                 
-        # 2. Check Tranco Top 10k
+        # 2. Check institutional TLDs
+        for tld in getattr(URLConfig, "TRUSTED_TLDS", set()):
+            if d.endswith(tld):
+                return True
+
+        # 3. Check Tranco Top 10k
         if d in cls._top_domains:
             return True
             
